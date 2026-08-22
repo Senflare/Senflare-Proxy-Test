@@ -5,8 +5,8 @@
 ## ✨ 工作流程
 
 ```
-拉取多源（纯 IP 也收）→ 组内去重
-  ├─ 只拉取组 ──────────────────────────── 直接汇入（上游已验证）
+拉取多源 → 组内去重
+  ├─ 只拉取组 ─ 直接汇入（上游已验证）
   └─ 需测试组 → ① TCP 存活测试 → ② HTTP 验证 → 通过者汇入
                     ↓
         ③ 地区补全（缓存优先，纯 IP 统一格式）→ 合并去重 → Senflare-Proxy.txt
@@ -20,8 +20,7 @@
 
 ## 📡 数据来源
 
-**只拉取**：Xiaobei09 · Fangsia Karlina · Xgonce
-**需测试**：Xinyitang3
+[Xiaobei09](https://github.com/Xiaobei09) · [Cmliu](https://github.com/cmliu) · [Wentao883](https://github.com/wentao883) · [ChatBotPlus](https://github.com/ChatBotPlus) · [Ymyuuu](https://github.com/ymyuuu) · [Mountain787](https://github.com/mountain787) · [Fangsia Karlina](https://github.com/papapapapdelesia) · [Xgonce](https://github.com/xgonce) · [Xinyitang3](https://github.com/xinyitang3)
 
 ## 📤 输出格式
 
@@ -61,7 +60,3 @@ python Start.py
 - ⏰ 每 3 小时自动运行一次（UTC 错峰），支持手动触发
 - 💾 运行结束自动提交 `Senflare-Proxy.txt` 与地区缓存回仓库
 - 🔁 带 concurrency 防重入，无变化跳过提交
-
-## 🙏 致谢
-
-数据均来自各位作者的持续验证与分享，感谢。
