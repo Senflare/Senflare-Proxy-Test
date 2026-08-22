@@ -1,6 +1,6 @@
 # Senflare Proxy Test
 
-Cloudflare 优选 IP 聚合测试脚本 —— 多源汇聚、漏斗检测、自动补全地区，GitHub Actions 每 3 小时自动更新结果。
+反代 IP（ProxyIP）聚合 / 测试脚本 —— 多源汇聚、TCP/HTTP 双层漏斗检测、地区码自动补全，GitHub Actions 每 3 小时自动更新结果。
 
 ## ✨ 工作流程
 
@@ -18,21 +18,10 @@ Cloudflare 优选 IP 聚合测试脚本 —— 多源汇聚、漏斗检测、自
 | ② HTTP 验证 | `HEAD /cdn-cgi/trace` 必须返回 400 且 `server: cloudflare*`，过滤假节点，采样计算延迟/抖动（128 并发） |
 | ③ 地区补全 | 无地区码的节点调 [ipinfo.io lite](https://ipinfo.io) 补齐；本地 LRU 缓存 1 万条，重复 IP 不重复查询 |
 
-## 📡 数据源
+## 📡 数据来源
 
-**只拉取**（上游已验证，免测直入）：
-
-| 来源 | 说明 |
-|---|---|
-| [Xiaobei09/proxyip](https://github.com/Xiaobei09/proxyip) | 聚合接口，已汇聚 Cmliu / Wentao883 / ChatBotPlus / Ymyuuu / Mountain787 等上游 |
-| [Fangsia Karlina](https://github.com/papapapapdelesia/Emilia) | Emilia 存活列表（CSV） |
-| [Xgonce](https://github.com/xgonce/Cloudflare_IP) | Cloudflare_IP 测速结果（CSV） |
-
-**需测试**（通过 ①② 两层才汇入）：
-
-| 来源 | 说明 |
-|---|---|
-| [xinyitang3/countrymerge](https://github.com/xinyitang3/cfnb) | countrymerge 全量列表 |
+**只拉取**：Xiaobei09 · Fangsia Karlina · Xgonce
+**需测试**：Xinyitang3
 
 ## 📤 输出格式
 
@@ -44,7 +33,8 @@ Cloudflare 优选 IP 聚合测试脚本 —— 多源汇聚、漏斗检测、自
 157.22.240.45:8443#AR
 ```
 
-免测组在前，测试通过的按 HTTP 延迟升序在后；跨组按 `ip:port` 去重。兼容解析：干净标签、emoji 国旗富标签、纯 IP（默认 443 端口）。
+免测组在前，测试通过的按 HTTP 延迟升序在后，跨组按 `ip:port` 去重
+兼容解析：干净标签、emoji 国旗富标签、纯 IP（默认 443 端口）
 
 ## 💻 本地运行
 
@@ -72,12 +62,6 @@ python Start.py
 - 💾 运行结束自动提交 `Senflare-Proxy.txt` 与地区缓存回仓库
 - 🔁 带 concurrency 防重入，无变化跳过提交
 
-结果文件随时获取：
-
-```
-https://raw.githubusercontent.com/Senflare/Senflare-Proxy-Test/main/Senflare-Proxy.txt
-```
-
 ## 🙏 致谢
 
-数据均来自上述公开项目作者的持续验证与分享。
+数据均来自各位作者的持续验证与分享，感谢。
