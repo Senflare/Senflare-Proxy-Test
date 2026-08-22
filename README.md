@@ -1,7 +1,6 @@
 # Senflare Proxy Test
 
-Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多源汇聚
-GitHub Actions 每 3 小时自动更新结果
+Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多源汇聚, GitHub Actions 每小时自动更新结果
 
 
 🌐 **主站**：<https://proxy.seeck.cn/> ｜ **备用**：<https://proxy-vercel.seeck.cn/>
