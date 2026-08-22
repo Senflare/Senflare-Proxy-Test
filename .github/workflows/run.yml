@@ -3,7 +3,7 @@ name: Senflare Proxy Test
 # 定时跑优选测试：拉取多源 → TCP/HTTP 检测 → 地区补全 → 提交结果文件
 on:
   schedule:
-    - cron: '23 */3 * * *'    # 每 3 小时一次（UTC，避开整点高峰）
+    - cron: '23 */1 * * *'    # 每小时一次（UTC，避开整点高峰）
   workflow_dispatch:           # 支持手动触发
 
 permissions:
@@ -26,10 +26,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 🔎 运行优选测试（零依赖，纯标准库）
+      - name: 🔎 运行优选测试
         run: python Start.py
 
-      - name: 💾 提交结果与地区缓存
+      - name: 💾 提交结果/地区缓存
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
