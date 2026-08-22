@@ -39,6 +39,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "✅ 结果无变化，跳过提交"
           else
-            git commit -m "🔄 更新优选结果 $(date -u +%Y-%m-%d_%H:%M) [skip ci]"
+            git commit -m "🔄 数据更新 $(date -u +%Y-%m-%d-%H:%M) [ Senflare ]"
             git push
           fi

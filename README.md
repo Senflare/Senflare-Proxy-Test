@@ -2,12 +2,14 @@
 
 反代 IP（ProxyIP）聚合 / 测试脚本 —— 多源汇聚、TCP/HTTP 双层漏斗检测、地区码自动补全，GitHub Actions 每 3 小时自动更新结果。
 
+🌐 **主站**：<https://proxy.seeck.cn/> ｜ **备用**：<https://proxy-vercel.seeck.cn/>
+
 ## ✨ 工作流程
 
 ```
 拉取多源 → 组内去重
   ├─ 只拉取组 ─ 直接汇入（上游已验证）
-  └─ 需测试组 → ① TCP 存活测试 → ② HTTP 验证 → 通过者汇入
+  └─ 需测试组 → ① TCP 存活测试 → ② HTTP 验证 → 通过者写入
                     ↓
         ③ 地区补全（缓存优先，纯 IP 统一格式）→ 合并去重 → Senflare-Proxy.txt
 ```
@@ -43,20 +45,16 @@
 python Start.py
 ```
 
-常用参数在脚本头部常量区：
+常用参数在脚本头部常量区，自己看代码，不多做介绍。
 
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `TIMEOUT` | 2.0s | TCP 连接超时 |
-| `MAX_WORKERS` | 300 | TCP 并发线程数 |
-| `HTTP_TEST_WORKERS` | 128 | HTTP 并发线程数 |
-| `REGION_CACHE_MAX` | 10000 | 地区缓存条数上限 |
-| `TEST_LIMIT` | 0 | 🧪 试跑模式：每组只取前 N 个（0 = 全量） |
-
-## 🤖 GitHub Actions 自动化
+## 🤖 GitHub Actions
 
 仓库自带 [`.github/workflows/run.yml`](.github/workflows/run.yml)：
 
 - ⏰ 每 3 小时自动运行一次（UTC 错峰），支持手动触发
 - 💾 运行结束自动提交 `Senflare-Proxy.txt` 与地区缓存回仓库
 - 🔁 带 concurrency 防重入，无变化跳过提交
+
+## 🙏 致谢
+
+数据均来自各位作者的持续验证与分享，感谢。
