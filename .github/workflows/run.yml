@@ -33,7 +33,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Senflare-Proxy.txt Senflare-Country.json || true
+          # 分开 add：任一文件本次未生成（如无节点需查地区时没有缓存文件）不影响另一个的提交
+          git add Senflare-Proxy.txt || true
+          git add Senflare-Country.json || true
           if git diff --cached --quiet; then
             echo "✅ 结果无变化，跳过提交"
           else

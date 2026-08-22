@@ -7,7 +7,7 @@ Cloudflare 优选 IP 聚合测试脚本 —— 多源汇聚、漏斗检测、自
 ```
 拉取多源（纯 IP 也收）→ 组内去重
   ├─ 只拉取组 ──────────────────────────── 直接汇入（上游已验证）
-  └─ 需测试组 → ① TCP 存活测试 → ② HTTP 真 CF 验证 → 通过者汇入
+  └─ 需测试组 → ① TCP 存活测试 → ② HTTP 验证 → 通过者汇入
                     ↓
         ③ 地区补全（缓存优先，纯 IP 统一格式）→ 合并去重 → Senflare-Proxy.txt
 ```
@@ -15,7 +15,7 @@ Cloudflare 优选 IP 聚合测试脚本 —— 多源汇聚、漏斗检测、自
 | 层 | 说明 |
 |---|---|
 | ① TCP 存活 | socket 直连测延迟，成功率不达标直接淘汰（300 并发） |
-| ② HTTP 真 CF | `HEAD /cdn-cgi/trace` 必须返回 400 且 `server: cloudflare*`，过滤假节点，采样计算延迟/抖动（128 并发） |
+| ② HTTP 验证 | `HEAD /cdn-cgi/trace` 必须返回 400 且 `server: cloudflare*`，过滤假节点，采样计算延迟/抖动（128 并发） |
 | ③ 地区补全 | 无地区码的节点调 [ipinfo.io lite](https://ipinfo.io) 补齐；本地 LRU 缓存 1 万条，重复 IP 不重复查询 |
 
 ## 📡 数据源
