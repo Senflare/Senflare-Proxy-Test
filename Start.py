@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Senflare Proxy Test —— Cloudflare 优选 IP 测试脚本（TCP + HTTP 检测 + 免测汇聚）
+Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多源汇聚
 
 流程：拉取多源（纯 IP 也收）→ 组内去重 → 免测源直入 + 其余源走 ① TCP 存活测试 → ② HTTP 真CF验证
      → ③ 地区补全（缓存优先，纯 IP 节点统一格式）→ 合并去重输出 Senflare-Proxy.txt
