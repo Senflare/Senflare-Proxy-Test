@@ -72,7 +72,8 @@ TEST_SOURCES = {
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_PORT = 443        # 不带端口的节点默认使用该端口
-FETCH_RETRIES = 2         # 数据源拉取尝试次数
+FETCH_RETRIES = 5         # 数据源拉取尝试次数
+FETCH_RETRY_DELAY = 2     # 相邻两次拉取之间的等待（秒）
 FETCH_TIMEOUT = 10        # 数据源拉取超时（秒）
 TIMEOUT = 2.0             # 单次 TCP 连接超时（秒）
 TCP_PROBES = 2            # 每个节点 TCP 连接测试次数
@@ -201,7 +202,8 @@ def load_nodes():
                     break
                 except Exception as e:
                     if attempt < FETCH_RETRIES:
-                        print(f'⚠️  [{name}] 第 {attempt} 次拉取失败：{e}，重试中...')
+                        print(f'⚠️  [{name}] 第 {attempt} 次拉取失败：{e}，{FETCH_RETRY_DELAY}s 后重试...')
+                        time.sleep(FETCH_RETRY_DELAY)
             if text is None:
                 print(f'❌ [{name}] 共 {FETCH_RETRIES} 次拉取均失败，跳过该源')
                 continue
