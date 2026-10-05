@@ -3,15 +3,11 @@
 """
 Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多源汇聚
 
-流程：拉取多源（纯 IP 也收）→ 组内去重 → 免测源直入 + 其余源走 ① TCP 存活测试 → ② HTTP 真CF验证
-     → ③ 地区补全（缓存优先，纯 IP 节点统一格式）→ 合并去重输出 Senflare-Proxy.txt
-
-数据源按「只拉取 / 需测试」分成两组配置。
-仅用 Python 标准库，无需安装任何依赖。Python 3.8+。
+标准库，Python 3.8+。
 """
 
-import re
 import io
+import ipaddress
 import json
 import os
 import socket
@@ -24,100 +20,134 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode
 
-# Windows 控制台默认 GBK 编码，emoji 会直接报 UnicodeEncodeError；
-# 统一切到 UTF-8，切不动或写不了时降级为替换字符
+from SourceParse import parse_source
+
+# 控制台输出统一为 UTF-8
 for _stream in (sys.stdout, sys.stderr):
     if isinstance(_stream, io.TextIOWrapper):
         _stream.reconfigure(encoding='utf-8', errors='replace')
 
 # ============================================================================
-# 一、配置
+# 一、配置列表
 # ============================================================================
 
-# —— 只拉取：上游已验证的聚合数据，免测直接汇入结果 ——
+# —— 免测数据 ——
 DIRECT_SOURCES = {
-    # 聚合接口：Xiaobei09 项目把下列上游作者的验证结果汇聚成一个 all.txt
-    # 项目地址：https://github.com/Xiaobei09/proxyip ，上游来源：
-    #   - Cmliu：https://zip.cm.edu.kg/all.txt
-    #   - Wentao883：https://github.com/wentao883/TG-wxgqlfx_ZBDW （fdip.txt / vlid.txt / yxip.txt）
-    #   - ChatBotPlus：https://github.com/ChatBotPlus/cf-proxyips （list.txt）
-    #   - Ymyuuu：https://github.com/ymyuuu/IPDB （BestProxy 的 proxy.txt 与 bestproxy&country.txt）
-    #   - Mountain787：https://github.com/mountain787/Lunch-Bag-ip （proxyip.csv）
-    # 拉取走 jsDelivr CDN 加速；原始地址：https://raw.githubusercontent.com/Xiaobei09/proxyip/refs/heads/main/data/valid/all.txt
+    # 项目作者：Xiaobei09
+    # 项目地址：https://github.com/Xiaobei09/proxyip
+    # 项目来源：Cmliu（zip.cm.edu.kg/all.txt）/ Wentao883（TG-wxgqlfx_ZBDW）/ ChatBotPlus（cf-proxyips）/ Ymyuuu（IPDB BestProxy）/ Mountain787（Lunch-Bag-ip）
     'Xiaobei': {
-        'url': 'https://cdn.jsdelivr.net/gh/Xiaobei09/proxyip@main/data/valid/all.txt',
+        'url': 'https://raw.githubusercontent.com/Xiaobei09/proxyip/refs/heads/main/data/valid/all.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/Xiaobei09/proxyip@main/data/valid/all.txt',
     },
-    # 作者：Fangsia Karlina —— https://github.com/papapapapdelesia/Emilia （Mayumiwandi/Emilia fork）
-    # 格式：CSV 列位 IP,端口,地区码，无表头（与主项目 parseColumns(text, 0, 1, 2, false) 一致）
+    # 项目作者：Fangsia Karlina
+    # 项目地址：https://github.com/papapapapdelesia/Emilia
     'Fangsia Karlina': {
-        'url': 'https://cdn.jsdelivr.net/gh/Mayumiwandi/Emilia@main/Data/alive.txt',
+        'url': 'https://raw.githubusercontent.com/papapapapdelesia/Emilia/refs/heads/main/Data/alive.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/papapapapdelesia/Emilia@main/Data/alive.txt',
         'columns': (0, 1, 2, False),
     },
-    # 作者：Xgonce —— https://github.com/xgonce/Cloudflare_IP
-    # 格式：CSV 列位 IP,,端口,,,地区码，带表头（与主项目 parseColumns(text, 0, 2, 4, true) 一致）
+}
+
+# —— 待测数据 ——
+TEST_SOURCES = {
+    # 项目作者：Xgonce
+    # 项目地址：https://github.com/xgonce/Cloudflare_IP
     'Xgonce': {
-        'url': 'https://cdn.jsdelivr.net/gh/xgonce/Cloudflare_IP@main/result.csv',
+        'url': 'https://raw.githubusercontent.com/xgonce/Cloudflare_IP/refs/heads/main/result.csv',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/xgonce/Cloudflare_IP@main/result.csv',
         'columns': (0, 2, 4, True),
     },
-}
-
-# —— 需要测试：拉取后走 ① TCP 存活 → ② HTTP 真CF验证，通过的才汇入结果 ——
-TEST_SOURCES = {
-    'Xinyitang3': {
-        'url': 'https://countrymerge.pages.dev/all.txt',
+    # 项目作者：Lzj（辣子鸡）
+    # 项目地址：https://github.com/wanwushequ/cfyxip
+    'Lzj': {
+        'url': 'https://raw.githubusercontent.com/wanwushequ/cfyxip/refs/heads/main/lzj/all.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/wanwushequ/cfyxip@main/lzj/all.txt',
+    },
+    # 项目作者：Wan828963-code
+    # 项目地址：https://github.com/wan828963-code/best-cf-ips
+    'Wan828963-code': {
+        'url': 'https://raw.githubusercontent.com/wan828963-code/best-cf-ips/refs/heads/main/best-cf-ipv4.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/wan828963-code/best-cf-ips@main/best-cf-ipv4.txt',
+    },
+    # 项目作者：Alphaxzj
+    # 项目地址：https://github.com/alphaxzj/bestcf
+    'Alphaxzj': {
+        'url': 'https://raw.githubusercontent.com/alphaxzj/bestcf/refs/heads/main/ipv4.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/alphaxzj/bestcf@main/ipv4.txt',
+    },
+    # 项目作者：Rxsweet
+    # 项目地址：https://github.com/rxsweet/cfip
+    'Rxsweet': {
+        'url': 'https://raw.githubusercontent.com/rxsweet/cfip/refs/heads/main/ip/allip.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/rxsweet/cfip@main/ip/allip.txt',
+    },
+    # 项目作者：Liyan1972
+    # 项目地址：https://github.com/liyan1972/proxyip-fetcher
+    'Liyan1972': {
+        'url': 'https://raw.githubusercontent.com/liyan1972/proxyip-fetcher/refs/heads/main/ProxyIP-asn-ips.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/liyan1972/proxyip-fetcher@main/ProxyIP-asn-ips.txt',
+    },
+    # 项目作者：NiREvil
+    # 项目地址：https://github.com/NiREvil/vless
+    # 项目来源：社区扫描聚合快照
+    'NiREvil': {
+        'url': 'https://raw.githubusercontent.com/NiREvil/vless/refs/heads/main/sub/country_proxies/03_proxies.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/NiREvil/vless@main/sub/country_proxies/03_proxies.txt',
     },
 }
-
-# 输出/缓存统一锚定到脚本所在目录：无论从哪个工作目录启动，文件都落在脚本旁
+# 输出/缓存锚定到脚本所在目录
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DEFAULT_PORT = 443        # 不带端口的节点默认使用该端口
-FETCH_RETRIES = 5         # 数据源拉取尝试次数
+FETCH_RETRIES = 5
 FETCH_RETRY_DELAY = 2     # 相邻两次拉取之间的等待（秒）
 FETCH_TIMEOUT = 10        # 数据源拉取超时（秒）
 TIMEOUT = 2.0             # 单次 TCP 连接超时（秒）
 TCP_PROBES = 2            # 每个节点 TCP 连接测试次数
-MIN_SUCCESS_RATE = 1.0    # TCP 最低成功率阈值（低于此值直接淘汰）
+MIN_SUCCESS_RATE = 1.0    # TCP 最低成功率阈值
 MAX_WORKERS = 300         # TCP 并发线程数
 
 HTTP_TEST_ENABLED = True  # HTTP 二次验证开关
 HTTP_TEST_METHOD = 'HEAD' # HEAD 或 GET
 HTTP_TEST_TIMEOUT = 3     # 单次 HTTP 响应超时（秒）
-HTTP_JITTER_SAMPLES = 3   # HTTP 延迟采样次数（≥3，用于算平均延迟与抖动）
-HTTP_TEST_WORKERS = 128   # HTTP 并发线程数（纯 I/O 等待型，可开高；慢死节点 9s/个 是主要拖累）
+HTTP_JITTER_SAMPLES = 3   # HTTP 延迟采样次数
+HTTP_TEST_WORKERS = 128   # HTTP 并发线程数
 
-# —— ③ 地区补全：无地区码的节点在测试后查接口补齐 ——
-# 主查询：ipinfo.io lite 免费接口（返回 country_code 字段）
+# —— 地区补全：主查询 ipinfo lite，兜底 Cmliu 接口 ——
 REGION_API = 'https://api.ipinfo.io/lite/{ip}?token=2cb674df499388'
-# 兜底：主查询查不到时才启用，注意：该接口是代理可用性检测器，尽量不使用
 FALLBACK_CHECK_API = 'https://api.090227.xyz/check'
 REGION_CACHE_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Country.json')  # 本地缓存：ip → 国家代码
-REGION_CACHE_MAX = 10000   # 缓存最多保留条数（超出淘汰最久未用）
+REGION_CACHE_MAX = 10000   # 缓存条数上限
 REGION_WORKERS = 32        # 地区查询并发线程数
 REGION_TIMEOUT = 5         # 单次查询超时（秒）
 
 OUTPUT_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy.txt')
 PROGRESS_INTERVAL = 1     # 进度打印刷新间隔（秒）
-TEST_LIMIT = 0            # 🧪 试跑模式：每组只取前 N 个节点走完整流程（0 = 全量）
+TEST_LIMIT = 0            # 试跑：每组只取前 N 个（0 = 全量）
 
 
 # ============================================================================
-# 二、拉取与解析
+# 二、拉取与解析（格式解析函数在 SourceParse.py 模块）
 # ============================================================================
 
-REGION_RE = re.compile(r'[A-Z]{2,3}')
-IPV4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
+# Cloudflare 官方网段
+CF_NETWORKS = [ipaddress.ip_network(n) for n in (
+    '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', 
+    '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13', '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+    '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32', '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
+)]
 
-
-def valid_host(host):
-    """主机合法性：IPv4 或含冒号的 IPv6 形态（排除把任意文本当主机）"""
-    return bool(IPV4_RE.match(host) or ':' in host)
-
+def is_cf_ip(host):
+    """主机是否在 Cloudflare 官方网段内"""
+    try:
+        addr = ipaddress.ip_address(host.strip('[]'))
+    except ValueError:
+        return False
+    return any(addr in net for net in CF_NETWORKS)
 
 def fmt(n):
     """数字千分位格式化，日志更易读"""
     return f'{n:,}'
-
 
 def fetch_text(url, timeout=FETCH_TIMEOUT):
     """拉取数据源文本"""
@@ -126,112 +156,51 @@ def fetch_text(url, timeout=FETCH_TIMEOUT):
         return resp.read().decode('utf-8', 'ignore')
 
 
-def normalize_line(line):
-    """
-    归一化为 ip:port#Region，主机非法返回 None。
-    兼容格式：
-      干净标签：1.2.3.4:443#US
-      富标签（Xiaobei09 实测格式）：1.2.3.4:443#🇺🇸US-10ms-CF-84-DC-RES-CN-CF-82
-      纯 IP 无端口：1.2.3.4#US → 端口默认 DEFAULT_PORT(443)
-      纯 IP / 纯 IP:端口（无地区码）→ 保留为 ip:port#，由 ③ 地区补全填充
-    有标签时取第一个大写字母段作地区码（国旗后紧跟的 ISO 码）。
-    """
-    line = line.strip().lstrip(chr(65279))  # 65279 = U+FEFF（BOM）
-    if not line:
-        return None
-    if '#' in line:
-        idx = line.find('#')
-        ip_port, tag = line[:idx].strip(), line[idx + 1:]
-        m = REGION_RE.search(tag.upper())
-        region = m.group(0) if m else ''
-    else:
-        ip_port, region = line, ''
-    # 兼容三种形态：ip:port、[IPv6]:port、纯 IP（端口取 DEFAULT_PORT）
-    if ':' in ip_port:
-        host, _, port = ip_port.rpartition(':')
-        if not host or not port.isdigit():
-            return None
-    else:
-        host, port = ip_port, str(DEFAULT_PORT)
-    if not valid_host(host.strip('[]')):
-        return None
-    return f'{host}:{port}#{region}'
-
-
-def parse_columns(text, ip_idx, port_idx, country_idx, skip_header):
-    """
-    通用 CSV 列位解析 → ip:port#Region（与主项目 _worker.js 的 parseColumns 一致）。
-    columns 元组：(IP列, 端口列, 地区码列, 是否跳表头)。
-    """
-    out = []
-    for raw in text.splitlines():
-        line = raw.strip().lstrip(chr(65279))
-        if not line:
-            continue
-        cols = line.split(',')
-        if len(cols) <= max(ip_idx, port_idx, country_idx):
-            continue
-        if skip_header and cols[ip_idx].strip().upper() == 'IP':
-            continue
-        ip = cols[ip_idx].strip()
-        port = cols[port_idx].strip()
-        if not valid_host(ip) or not port.isdigit():
-            continue
-        country = cols[country_idx].strip().upper()
-        if re.fullmatch(r'[A-Z]{2,3}', country):
-            out.append(f'{ip}:{port}#{country}')
-        else:
-            out.append(f'{ip}:{port}#')  # 地区列非标准代码，留给 ③ 补全
-    return out
-
-
 def load_nodes():
-    """
-    拉取两组源 → 归一化 → 各组内按 ip:port 独立去重（保留先出现者）。
-    两组数据来源不同、各自去重，跨组重复留给最终合并时统一清理。
-    返回 (direct_nodes, test_nodes)
-    """
-    def fetch_group(sources):
-        seen = set()
+    """拉取两组源 → 归一化 → 按 ip:port 去重（待测组跳过免测组已有 IP）；返回 (direct_nodes, test_nodes)"""
+    def fetch_group(sources, seen=None):
+        seen = seen if seen is not None else set()
         nodes = []
         for name, source in sources.items():
             text = None
-            for attempt in range(1, FETCH_RETRIES + 1):
-                try:
-                    text = fetch_text(source['url'])
+            urls = [u for u in (source.get('url'), source.get('fallbackUrl')) if u]
+            for url in urls:
+                for attempt in range(1, FETCH_RETRIES + 1):
+                    try:
+                        text = fetch_text(url)
+                        break
+                    except Exception as e:
+                        if attempt < FETCH_RETRIES:
+                            print(f'⚠️  [{name}] 第 {attempt} 次拉取失败：{e}，{FETCH_RETRY_DELAY}s 后重试...')
+                            time.sleep(FETCH_RETRY_DELAY)
+                if text is not None:
                     break
-                except Exception as e:
-                    if attempt < FETCH_RETRIES:
-                        print(f'⚠️  [{name}] 第 {attempt} 次拉取失败：{e}，{FETCH_RETRY_DELAY}s 后重试...')
-                        time.sleep(FETCH_RETRY_DELAY)
             if text is None:
-                print(f'❌ [{name}] 共 {FETCH_RETRIES} 次拉取均失败，跳过该源')
+                print(f'❌ [{name}] 主源+备用共 {len(urls) * FETCH_RETRIES} 次拉取均失败，跳过该源')
                 continue
 
             count = 0
-            # 带 'columns' 的源按 CSV 列位解析，其余按行格式归一化
-            if 'columns' in source:
-                parsed = parse_columns(text, *source['columns'])
-            else:
-                parsed = (n for n in map(normalize_line, text.splitlines()) if n)
+            # 格式解析走 SourceParse 模块
+            parsed = parse_source(text, source)
             for node in parsed:
                 key = node.rpartition('#')[0]
-                if key not in seen:
-                    seen.add(key)
-                    nodes.append(node)
-                    count += 1
+                if key in seen:
+                    continue
+                seen.add(key)
+                nodes.append(node)
+                count += 1
             print(f'🌐 [{name}] 新增 {fmt(count)} 个节点')
         return nodes
 
     direct_nodes = fetch_group(DIRECT_SOURCES)
-    test_nodes = fetch_group(TEST_SOURCES)
+    test_nodes = fetch_group(TEST_SOURCES, seen={n.rpartition('#')[0] for n in direct_nodes})
     print(f'\n📊 组内去重后共 {fmt(len(direct_nodes) + len(test_nodes))} 个节点'
           f'（只拉取 {fmt(len(direct_nodes))} · 需测试 {fmt(len(test_nodes))}）')
     return direct_nodes, test_nodes
 
 
 # ============================================================================
-# 三、① TCP 连接存活测试
+# 三、TCP 连接存活测试
 # ============================================================================
 
 def test_tcp(host, port):
@@ -241,7 +210,6 @@ def test_tcp(host, port):
     for _ in range(TCP_PROBES):
         try:
             start = time.time()
-            # create_connection 自动解析 IPv4/IPv6
             with socket.create_connection((host.strip('[]'), int(port)), timeout=TIMEOUT):
                 pass
             min_lat = min(min_lat, (time.time() - start) * 1000)
@@ -263,7 +231,7 @@ def run_tcp_tests(nodes):
         ok, lat = test_tcp(host, port)
         return node, ok, lat
 
-    print(f'\n🔌 ── ① TCP 存活测试 ── {fmt(total)} 个节点 · 超时 {TIMEOUT}s · 并发 {MAX_WORKERS}')
+    print(f'\n🔌 ── TCP 存活测试 ── {fmt(total)} 个节点 · 超时 {TIMEOUT}s · 并发 {MAX_WORKERS}')
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {pool.submit(work, n): n for n in nodes}
         for fut in as_completed(futures):
@@ -281,7 +249,7 @@ def run_tcp_tests(nodes):
 
 
 # ============================================================================
-# 四、② HTTP 真 CF 验证（/cdn-cgi/trace）
+# 四、HTTP 真 CF 验证（/cdn-cgi/trace）
 # ============================================================================
 
 UA_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -289,16 +257,11 @@ UA_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
 
 
 def check_http(node):
-    """
-    向 http://ip:port/cdn-cgi/trace 发请求，判定是否真 Cloudflare 边缘：
-      状态码必须为 400 且响应头 server 以 cloudflare 开头。
-    返回 (node, 是否通过, 平均延迟ms, 抖动ms)
-    """
+    """http://ip:port/cdn-cgi/trace 返回 400 且 server 以 cloudflare 开头才算真 CF；返回 (node, 通过, 平均延迟ms, 抖动ms)"""
     host, _, port = node.rpartition('#')[0].rpartition(':')
     rounds = max(3, HTTP_JITTER_SAMPLES)
     latencies = []
     for _ in range(rounds):
-        # HTTPConnection 不支持 with 语法，用 try/finally 确保连接必关
         conn = http.client.HTTPConnection(host.strip('[]'), int(port), timeout=HTTP_TEST_TIMEOUT)
         try:
             start = time.time()
@@ -329,9 +292,8 @@ def run_http_tests(candidates):
     total = len(candidates)
     done, last_print = 0, time.time()
     passed = []
-    samples = max(3, HTTP_JITTER_SAMPLES)
-    print(f'\n🛰️  ── ② HTTP 真 CF 验证 ── {fmt(total)} 个候选 · '
-          f'{HTTP_TEST_METHOD} /cdn-cgi/trace · 采样 {samples} 次 · 并发 {HTTP_TEST_WORKERS}')
+    print(f'\n🛰️  ── HTTP 真 CF 验证 ── {fmt(total)} 个候选 · '
+          f'{HTTP_TEST_METHOD} /cdn-cgi/trace · 采样 {max(3, HTTP_JITTER_SAMPLES)} 次 · 并发 {HTTP_TEST_WORKERS}')
     with ThreadPoolExecutor(max_workers=HTTP_TEST_WORKERS) as pool:
         futures = {pool.submit(check_http, n): n for n, _ in candidates}
         tcp_map = dict(candidates)
@@ -350,7 +312,7 @@ def run_http_tests(candidates):
 
 
 # ============================================================================
-# 五、③ 地区补全（缓存优先 → 接口查询，纯 IP 节点在这里统一格式）
+# 五、地区补全（缓存优先 → 接口查询，纯 IP 节点在这里统一格式）
 # ============================================================================
 
 def load_region_cache():
@@ -376,7 +338,7 @@ def save_region_cache(cache):
 
 
 def query_ipinfo(ip):
-    """主查询：ipinfo.io lite 免费接口 → ISO 两位国家码"""
+    """查询 ipinfo → 国家码"""
     url = REGION_API.format(ip=ip)
     for _ in range(2):
         try:
@@ -386,9 +348,9 @@ def query_ipinfo(ip):
             code = data.get('country_code') or data.get('country') or ''
             return code.upper() if isinstance(code, str) and len(code) == 2 else None
         except urllib.error.HTTPError:
-            return None              # 状态码异常（限流/拒绝），重试无意义
+            return None
         except Exception:
-            continue                 # 网络抖动：再试一次
+            continue
     return None
 
 
@@ -411,7 +373,7 @@ def query_fallback(host, port):
 
 
 def query_region_api(host, port):
-    """③ 查询入口"""
+    """查询入口"""
     code = query_ipinfo(host)
     if code:
         return code
@@ -419,11 +381,7 @@ def query_region_api(host, port):
 
 
 def ensure_regions(nodes):
-    """
-    ③ 地区补全：本身带地区码的节点直接跳过；缺地区的优先查缓存，
-    未命中的并发调查询接口；最终拿不到地区的节点剔除（保证输出格式统一）。
-    返回补全后的节点列表（保持原顺序）。
-    """
+    """地区补全：带地区码的跳过，缺的查缓存 → 接口，补不到的剔除；保持原顺序"""
     cache = load_region_cache()
     result = list(nodes)
     pending_idx = []
@@ -434,7 +392,7 @@ def ensure_regions(nodes):
             continue
         host = base.rpartition(':')[0]
         code = cache.get(host)
-        if code:                       # 缓存命中：刷新 LRU 位置并直接填充
+        if code:                       # 缓存命中
             cache.move_to_end(host)
             hits += 1
             result[i] = f'{base}#{code}'
@@ -445,7 +403,7 @@ def ensure_regions(nodes):
     if pending_idx:
         total = len(pending_idx)
         done, last_print = 0, time.time()
-        print(f'\n🌍 ── ③ 地区补全 ── 待查 {fmt(total)} 个 · 缓存命中 {fmt(hits)} · '
+        print(f'\n🌍 ── 地区补全 ── 待查 {fmt(total)} 个 · 缓存命中 {fmt(hits)} · '
               f'ipinfo lite · 并发 {REGION_WORKERS}')
 
         def work(i):
@@ -463,7 +421,7 @@ def ensure_regions(nodes):
                     base = result[i].rpartition('#')[0]
                     host = base.rpartition(':')[0]
                     result[i] = f'{base}#{code}'
-                    cache[host] = code  # 重新插入即刷新 LRU 位置
+                    cache[host] = code
                 else:
                     failed += 1
                     result[i] = None    # 补不到地区的剔除
@@ -493,12 +451,19 @@ def main():
 
     direct_nodes, test_nodes = load_nodes()
 
-    # 试跑模式：拉全量源后截断，只对前 N 个走 测试 → 补全 → 输出
+    # 剔除 Cloudflare 官方网段（测试前清掉，省漏斗算力）
+    before = len(direct_nodes) + len(test_nodes)
+    direct_nodes = [n for n in direct_nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
+    test_nodes = [n for n in test_nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
+    cf_dropped = before - len(direct_nodes) - len(test_nodes)
+    if cf_dropped:
+        print(f'🧹 Cloudflare 官方网段剔除 {fmt(cf_dropped)} 个节点')
+
     if TEST_LIMIT > 0:
         direct_nodes = direct_nodes[:TEST_LIMIT]
         test_nodes = test_nodes[:TEST_LIMIT]
 
-    # 待测源走 ①TCP → ②HTTP 两层；只拉取组跳过
+    # 待测源走 TCP → HTTP 两层；只拉取组跳过
     passed = []
     if test_nodes:
         alive = run_tcp_tests(test_nodes)
@@ -507,35 +472,32 @@ def main():
         else:
             passed = run_http_tests(alive)
 
-    # ③ 地区补全：无地区码（纯 IP）的节点查接口补齐，缓存优先，补不上的剔除
     direct_nodes = ensure_regions(direct_nodes)
     if passed:
-        meta = {t[0]: t[1:] for t in passed}
+        meta = {t[0].rpartition('#')[0]: t[1:] for t in passed}
         filled = ensure_regions([t[0] for t in passed])
-        passed = [(n,) + meta[n] for n in filled]
+        passed = [(n,) + meta[n.rpartition('#')[0]] for n in filled]
 
     if not direct_nodes and not passed:
         print('❌ 没有任何有效节点，退出')
         sys.exit(1)
 
-    # 结果合并：免测聚合数据在前，测试通过的按 HTTP 延迟升序在后；
-    # 两组合流后再做一次去重兜底（按 ip:port，保留先出现者）
-    passed.sort(key=lambda x: x[2] if x[2] > 0 else float('inf'))
-    final_seen = set()
-    final_nodes = []
-    for node in direct_nodes:
+    # 合并输出：免测组在前，测试组按延迟升序；去重兜底
+    passed.sort(key=lambda x: x[2] if x[2] > 0 else x[1] if x[1] > 0 else float('inf'))
+    final_seen, final_nodes = set(), []
+    dup = 0
+    for node in direct_nodes + [p[0] for p in passed]:
         key = node.rpartition('#')[0]
-        if key not in final_seen:
-            final_seen.add(key)
-            final_nodes.append(node)
-    for node, _, _, _ in passed:
-        key = node.rpartition('#')[0]
-        if key not in final_seen:
-            final_seen.add(key)
-            final_nodes.append(node)
-    dup = len(direct_nodes) + len(passed) - len(final_nodes)
+        if key in final_seen:
+            dup += 1
+            continue
+        final_seen.add(key)
+        final_nodes.append(node)
     if dup:
-        print(f'🧹 最终合并去重移除重复节点 {dup} 个')
+        print(f'🧹 合并去重移除重复节点 {fmt(dup)} 个')
+
+    # 按国家码升序分组，同国内保持原有（来源/延迟）顺序
+    final_nodes.sort(key=lambda n: n.rpartition('#')[2])
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write('\n'.join(final_nodes) + '\n')
