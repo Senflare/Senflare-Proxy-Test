@@ -105,13 +105,13 @@ FETCH_TIMEOUT = 10        # 数据源拉取超时（秒）
 TIMEOUT = 2.0             # 单次 TCP 连接超时（秒）
 TCP_PROBES = 2            # 每个节点 TCP 连接测试次数
 MIN_SUCCESS_RATE = 1.0    # TCP 最低成功率阈值
-MAX_WORKERS = 300         # TCP 并发线程数
+MAX_WORKERS = 200         # TCP 并发线程数
 
 HTTP_TEST_ENABLED = True  # HTTP 二次验证开关
 HTTP_TEST_METHOD = 'HEAD' # HEAD 或 GET
 HTTP_TEST_TIMEOUT = 3     # 单次 HTTP 响应超时（秒）
 HTTP_JITTER_SAMPLES = 3   # HTTP 延迟采样次数
-HTTP_TEST_WORKERS = 128   # HTTP 并发线程数
+HTTP_TEST_WORKERS = 100   # HTTP 并发线程数
 
 # —— 地区补全：主查询 ipinfo lite，兜底 Cmliu 接口 ——
 REGION_API = 'https://api.ipinfo.io/lite/{ip}?token=2cb674df499388'
@@ -337,8 +337,14 @@ def save_region_cache(cache):
         json.dump(cache, f, ensure_ascii=False, indent=0)
 
 
+class RegionRateLimited(Exception):
+    """ipinfo 限流标记：节点保留，待下轮重试"""
+
+RATE_LIMITED = object()
+
+
 def query_ipinfo(ip):
-    """查询 ipinfo → 国家码"""
+    """查询 ipinfo → 国家码；限流（429）抛 RegionRateLimited"""
     url = REGION_API.format(ip=ip)
     for _ in range(2):
         try:
@@ -347,7 +353,9 @@ def query_ipinfo(ip):
                 data = json.loads(resp.read().decode('utf-8', 'ignore'))
             code = data.get('country_code') or data.get('country') or ''
             return code.upper() if isinstance(code, str) and len(code) == 2 else None
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                raise RegionRateLimited
             return None
         except Exception:
             continue
@@ -373,15 +381,24 @@ def query_fallback(host, port):
 
 
 def query_region_api(host, port):
-    """查询入口"""
-    code = query_ipinfo(host)
+    """查询入口：ipinfo → 兜底；均失败且因限流则抛 RegionRateLimited"""
+    limited = False
+    try:
+        code = query_ipinfo(host)
+        if code:
+            return code
+    except RegionRateLimited:
+        limited = True
+    code = query_fallback(host, port)
     if code:
         return code
-    return query_fallback(host, port)
+    if limited:
+        raise RegionRateLimited
+    return None
 
 
 def ensure_regions(nodes):
-    """地区补全：带地区码的跳过，缺的查缓存 → 接口，补不到的剔除；保持原顺序"""
+    """地区补全：带地区码的跳过，缺的查缓存 → 接口；补不到的剔除，限流的保留待下轮"""
     cache = load_region_cache()
     result = list(nodes)
     pending_idx = []
@@ -399,7 +416,7 @@ def ensure_regions(nodes):
         else:
             pending_idx.append(i)
 
-    queried_ok = failed = 0
+    queried_ok = failed = limited = 0
     if pending_idx:
         total = len(pending_idx)
         done, last_print = 0, time.time()
@@ -409,14 +426,19 @@ def ensure_regions(nodes):
         def work(i):
             base = result[i].rpartition('#')[0]
             host, _, port = base.rpartition(':')
-            return i, query_region_api(host, port)
+            try:
+                return i, query_region_api(host, port)
+            except RegionRateLimited:
+                return i, RATE_LIMITED
 
         with ThreadPoolExecutor(max_workers=REGION_WORKERS) as pool:
             futures = [pool.submit(work, i) for i in pending_idx]
             for fut in as_completed(futures):
                 i, code = fut.result()
                 done += 1
-                if code:
+                if code is RATE_LIMITED:
+                    limited += 1              # 限流：节点原样保留，下轮重试
+                elif code:
                     queried_ok += 1
                     base = result[i].rpartition('#')[0]
                     host = base.rpartition(':')[0]
@@ -435,7 +457,7 @@ def ensure_regions(nodes):
         save_region_cache(cache)
     kept = [n for n in result if n]
     print(f'\n✅ 地区补全完成 · 缓存命中 {fmt(hits)} · 接口成功 {fmt(queried_ok)} · '
-          f'失败剔除 {fmt(failed)} · 缓存存量 {fmt(len(cache))}')
+          f'失败剔除 {fmt(failed)} · 限流保留 {fmt(limited)} · 缓存存量 {fmt(len(cache))}')
     return kept
 
 
