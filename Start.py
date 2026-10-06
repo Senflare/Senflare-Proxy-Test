@@ -90,10 +90,17 @@ TEST_SOURCES = {
     },
     # 项目作者：NiREvil
     # 项目地址：https://github.com/NiREvil/vless
-    # 项目来源：社区扫描聚合快照
+    # 项目来源：社区扫描聚合快照（02_proxies.csv 全量包含于 03_proxies.txt）
     'NiREvil': {
         'url': 'https://raw.githubusercontent.com/NiREvil/vless/refs/heads/main/sub/country_proxies/03_proxies.txt',
         'fallbackUrl': 'https://cdn.jsdelivr.net/gh/NiREvil/vless@main/sub/country_proxies/03_proxies.txt',
+    },
+    # 项目作者：OTC
+    # 项目地址：https://github.com/avotcorg/proxy
+    'OTC': {
+        'url': 'https://raw.githubusercontent.com/avotcorg/proxy/refs/heads/main/ProxyList1.txt',
+        'fallbackUrl': 'https://cdn.jsdelivr.net/gh/avotcorg/proxy@main/ProxyList1.txt',
+        'columns': (0, 1, 2, False),
     },
 }
 # 输出/缓存锚定到脚本所在目录
