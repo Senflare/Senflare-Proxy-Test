@@ -1,6 +1,6 @@
 # Senflare Proxy Test
 
-Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多源汇聚, GitHub Actions 每 3 小时自动更新结果
+Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多源汇聚, GitHub Actions 每 6 小时自动更新结果
 
 
 🌐 **主站**：<https://proxy.seeck.cn/> ｜ **备用**：<https://proxy-vercel.seeck.cn/>
@@ -62,7 +62,7 @@ python Start.py
 
 仓库自带 [`.github/workflows/run.yml`](.github/workflows/run.yml)：
 
-- ⏰ 每 3 小时自动运行一次（UTC 错峰），支持手动触发
+- ⏰ 每 6 小时自动运行一次（UTC 00/06/12/18:23 = 北京 08/14/20/次日 02:23），支持手动触发
 - 💾 运行结束自动提交 `Senflare-Proxy.txt`、地区缓存与五个分类文件回仓库
 - 🔁 带 concurrency 防重入，无变化跳过提交
 
