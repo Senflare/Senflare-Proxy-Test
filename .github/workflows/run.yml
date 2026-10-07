@@ -42,5 +42,7 @@ jobs:
             echo "✅ 结果无变化，跳过提交"
           else
             git commit -m "🔄 数据更新 $(TZ=Asia/Shanghai date +%Y-%m-%d-%H:%M) [ Senflare Proxy]"
+            # 运行期间有人推了代码则 rebase 后再推，否则必被 fetch first 拒绝；冲突则直接失败，不覆盖远端
+            git pull --rebase origin main
             git push
           fi
