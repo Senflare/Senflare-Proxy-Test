@@ -37,7 +37,7 @@ jobs:
           git add Senflare-Proxy.txt || true
           git add Senflare-Proxy-All.txt || true
           git add Senflare-Country.json || true
-          git add Senflare-Proxy-Bidirectional.txt Senflare-Proxy-Forward.txt Senflare-Proxy-Reverse.txt Senflare-Proxy-Invalid.txt || true
+          git add Senflare-Proxy-Bidirectional.txt Senflare-Proxy-Plaintext.txt Senflare-Proxy-Invalid.txt || true
           if git diff --cached --quiet; then
             echo "✅ 结果无变化，跳过提交"
           else

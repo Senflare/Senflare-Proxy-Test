@@ -517,13 +517,14 @@ def load_dead_list(lines=None):
 
 
 def write_class_files(probed, dead):
-    """P1×P2 矩阵落盘四个分类文件,Invalid 每轮给已拉黑死单续写一行(维持连续双挂轮数);返回 (本轮计数, Invalid 总行数)"""
-    # Senflare-Proxy-Bidirectional.txt 双向代理(入口出口都行) / Forward.txt 正向代理(仅入口)
-    # Senflare-Proxy-Reverse.txt 反向代理(仅出口) / Invalid.txt 无效淘汰(连续双挂计数,满 DEAD_ROUNDS 轮才跳过探测)
-    groups = {t: [] for t in ('Forward', 'Reverse', 'Bidirectional', 'Invalid')}
+    """按 P2 主判据落盘分类文件,Invalid 每轮给已拉黑死单续写一行(维持连续双挂轮数);返回 (本轮计数, Invalid 总行数)
+    Bidirectional = P2 通过 = TLS 入口与 Worker 出口同一条透传链路,双向都能站(实测 TLS-only 反代当 Worker 出口回 200 OK)
+    Plaintext = P2 失败但 P1 通过 = 只收明文 HTTP,现代 HTTPS 站点与 Worker 都用不上
+    Invalid = 双探针全挂 = 从本探测点不可达(非"已死",见 代理分类与测试.md)"""
+    groups = {t: [] for t in ('Bidirectional', 'Plaintext', 'Invalid')}
     cnt = Counter()
     for node, p1, _, _, p2 in probed:
-        tag = 'Bidirectional' if p1 and p2 else 'Reverse' if p1 else 'Forward' if p2 else 'Invalid'
+        tag = 'Bidirectional' if p2 else 'Plaintext' if p1 else 'Invalid'
         cnt[tag] += 1
         groups[tag].append(node)
     groups['Invalid'] += list(dead.values())   # 已拉黑死单续写,保住轮数不被清零
@@ -615,7 +616,7 @@ def main():
 
     print(f'\n💾 已写入 {OUTPUT_FILE}：只拉取 {fmt(len(direct_nodes))} + '
           f'测试通过 {fmt(len(test_final))} = 合并 {fmt(len(final_nodes))} 个')
-    print(f'🧭 三分类:{dict(cnt)} · Invalid 在册 {fmt(dead_total)}（满 {DEAD_ROUNDS} 轮才拉黑）')
+    print(f'🧭 分类:{dict(cnt)} · Invalid 在册 {fmt(dead_total)}（本探测点不可达，满 {DEAD_ROUNDS} 轮才拉黑）')
     print(f'📚 采集总库:本轮 {fmt(all_new)} · 累计 {fmt(all_total)} → {ALL_FILE}')
     print(f'\n🎉 全部完成 · 耗时 {time.time() - started:.0f} 秒')
 
