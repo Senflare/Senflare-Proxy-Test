@@ -10,7 +10,7 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 
 ```
 拉取多源 → 组内去重 → 剔除 Cloudflare 官方网段
-  └─ 全量节点 → 读死单记忆（Invalid 累积死单，无效节点跳过探测）→ P1×P2 三分类探测（单遍完成）
+  └─ 全量节点 → 读死单记忆（连续 3 轮双挂才跳过探测）→ P1×P2 三分类探测（单遍完成）
         ├─ 免测数据：直接汇入主产物（上游有实测流水线，探测结果仅作分类标记）
         ├─ 漏斗组 P1 或 P2 通过（三种代理全收）：汇入主产物（按 P1 延迟排序）
         └─ P1×P2 矩阵 → Senflare-Proxy-Bidirectional / Forward / Reverse / Invalid.txt
@@ -45,7 +45,7 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 分类产物（探测方案详见 [代理分类与测试.md](代理分类与测试.md)）：
 
 - `Senflare-Proxy-Bidirectional.txt`（双向代理）/ `Senflare-Proxy-Forward.txt`（正向代理）/ `Senflare-Proxy-Reverse.txt`（反向代理）：P1×P2 矩阵结果，一行一个节点，分类即文件名
-- `Senflare-Proxy-Invalid.txt`（无效淘汰）：累积死单——双探针全挂的节点记入死单，下轮整批跳过探测，只增不减（网络抖动误杀可人工清理该文件）
+- `Senflare-Proxy-Invalid.txt`（无效淘汰）：双探针全挂的节点每轮记一行，行数即连续双挂轮数；连续 3 轮才拉黑跳过探测，节点复活后计数自然清零（删行也可人工降轮数）
 - `Senflare-Proxy-All.txt`：历史采集总库——从各源采集过的节点全部累积（含测试未通过的），按 `ip:port` 去重、只增不减
 
 ## 💻 本地运行

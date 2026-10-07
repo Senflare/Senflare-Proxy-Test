@@ -119,6 +119,8 @@ P1_WORKERS = 100   # HTTP 并发线程数
 
 # —— P2 入口探测 + P3 反代检测（主:OTC 引擎 API / 备:Cmliu 检测接口）——
 P2_TIMEOUT = 4         # P2 单次探测超时（秒）
+P2_RETRIES = 1         # P2 握手异常重试次数（收到响应即定论，不重试）
+P2_RETRY_DELAY = 1     # P2 重试前退避（秒）
 P2_SNI = 'www.cloudflare.com'   # 入口探测的 SNI/Host 域名
 P3_API = 'https://api.ytb1.dns-dynamic.net/check'  # P3 主检测接口（引擎直连 公共 API 逐个调用保持克制）
 P3_FALLBACK_API = 'https://api.090227.xyz/check'  # P3 备用检测接口（Cmliu,主接口未判有效时回落）
@@ -139,7 +141,8 @@ REGION_TIMEOUT = 5         # 单次查询超时（秒）
 
 OUTPUT_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy.txt')
 ALL_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-All.txt')  # 历史采集总库：所有从源采集过的节点,累积去重
-INVALID_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-Invalid.txt')  # 无效死单（累积）：记忆双探针全挂的节点,下轮跳过探测
+INVALID_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-Invalid.txt')  # 无效死单（累积）：同一节点连续 DEAD_ROUNDS 轮双探针全挂才拉黑，未满轮数照常复测
+DEAD_ROUNDS = 3        # 连续几轮双挂才拉入死单（1 = 旧行为，误杀率极高）
 PROGRESS_INTERVAL = 1     # 进度打印刷新间隔（秒）
 TEST_LIMIT = 0            # 试跑：每组只取前 N 个（0 = 全量）
 
@@ -242,14 +245,18 @@ def recv_all(sock):
 
 
 def probe_forward(ip, port):
-    """P2 入口探测:TLS+SNI 透传,响应带 cf-ray 即达 CF 边缘(不看状态码)"""
-    try:
-        with socket.create_connection((ip, int(port)), timeout=P2_TIMEOUT) as s:
-            with TLS_CTX.wrap_socket(s, server_hostname=P2_SNI) as t:
-                t.sendall(f'HEAD /cdn-cgi/trace HTTP/1.1\r\nHost: {P2_SNI}\r\nConnection: close\r\n\r\n'.encode())
-                return b'cf-ray' in recv_all(t).lower()
-    except Exception:
-        return False
+    """P2 入口探测:TLS+SNI 透传,响应带 cf-ray 即达 CF 边缘(不看状态码)
+    边界:握手/传输异常按 P2_RETRIES 重试(可判为抖动),握手成功但无 cf-ray 是明确结论,立即返回"""
+    for attempt in range(P2_RETRIES + 1):
+        try:
+            with socket.create_connection((ip, int(port)), timeout=P2_TIMEOUT) as s:
+                with TLS_CTX.wrap_socket(s, server_hostname=P2_SNI) as t:
+                    t.sendall(f'HEAD /cdn-cgi/trace HTTP/1.1\r\nHost: {P2_SNI}\r\nConnection: close\r\n\r\n'.encode())
+                    return b'cf-ray' in recv_all(t).lower()
+        except Exception:
+            if attempt < P2_RETRIES:
+                time.sleep(P2_RETRY_DELAY)
+    return False
 
 
 UA_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -257,7 +264,9 @@ UA_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
 
 
 def check_http(node):
-    """P1 出口探测：http://ip:port/cdn-cgi/trace 返回 400 且 server 以 cloudflare 开头才算真 CF 返回 (node, 通过, 平均延迟ms, 抖动ms)"""
+    """P1 出口探测：http://ip:port/cdn-cgi/trace 返回 400 且 server 以 cloudflare 开头才算真 CF 返回 (node, 通过, 平均延迟ms, 抖动ms)
+    边界:rounds 次采样需全部拿到合规响应才算通过;连接异常/超时只算当次失败并继续下一采样(重试),
+    收到明确但不符的响应(如非 CF 的 400)立即判失败,不浪费采样"""
     host, _, port = node_addr(node).rpartition(':')
     rounds = max(3, P1_SAMPLES)
     latencies = []
@@ -270,7 +279,7 @@ def check_http(node):
             lat = (time.time() - start) * 1000
             resp.read()
         except Exception:
-            return node, False, 0.0, 0.0
+            continue
         finally:
             conn.close()
         if resp.status != 400:
@@ -279,6 +288,8 @@ def check_http(node):
         if not server.lower().startswith('cloudflare'):
             return node, False, 0.0, 0.0
         latencies.append(lat)
+    if len(latencies) < rounds:
+        return node, False, 0.0, 0.0
     avg = sum(latencies) / len(latencies)
     jitter = (sum((x - avg) ** 2 for x in latencies) / len(latencies)) ** 0.5
     return node, True, avg, jitter
@@ -488,29 +499,33 @@ def ensure_regions(nodes):
 # 五、输出
 # ============================================================================
 
-def load_dead_list():
-    """读 Invalid 文件作为死单记忆:双探针全挂过的节点,下轮整批跳过探测"""
-    dead = {}
-    if os.path.exists(INVALID_FILE):
-        for l in open(INVALID_FILE, encoding='utf-8'):
-            l = l.strip()
-            if l:
-                dead.setdefault(node_addr(l), l)
-    # ponytail: 死单永久拉黑不复测;网络抖动误杀需人工清理 Invalid 文件,要自动冷却再加
-    return dead
+def load_dead_list(lines=None):
+    """筛出已拉黑的死单:同一节点连续 DEAD_ROUNDS 轮双探针全挂才入选,未满轮数本轮照常复测
+    lines 为 None 时读 Invalid 文件。write_class_files 每轮给每个死单只写一行,
+    故行数即连续双挂轮数;节点某轮复活后不再写入,计数自然清零
+    """
+    if lines is None:
+        lines = [l.strip() for l in open(INVALID_FILE, encoding='utf-8')] if os.path.exists(INVALID_FILE) else []
+    counter, latest = Counter(), {}
+    for l in lines:
+        if l:
+            addr = node_addr(l)
+            counter[addr] += 1
+            latest.setdefault(addr, l)
+    return {a: l for a, l in latest.items() if counter[a] >= DEAD_ROUNDS}
 
 
 def write_class_files(probed, dead):
-    """P1×P2 矩阵落盘四个分类文件,Invalid 累积历史死单;返回 (本轮计数, 死单累计)"""
+    """P1×P2 矩阵落盘四个分类文件,Invalid 每轮给已拉黑死单续写一行(维持连续双挂轮数);返回 (本轮计数, Invalid 总行数)"""
     # Senflare-Proxy-Bidirectional.txt 双向代理(入口出口都行) / Forward.txt 正向代理(仅入口)
-    # Senflare-Proxy-Reverse.txt 反向代理(仅出口) / Invalid.txt 无效淘汰(累积死单,下轮跳过探测)
+    # Senflare-Proxy-Reverse.txt 反向代理(仅出口) / Invalid.txt 无效淘汰(连续双挂计数,满 DEAD_ROUNDS 轮才跳过探测)
     groups = {t: [] for t in ('Forward', 'Reverse', 'Bidirectional', 'Invalid')}
     cnt = Counter()
     for node, p1, _, _, p2 in probed:
         tag = 'Bidirectional' if p1 and p2 else 'Reverse' if p1 else 'Forward' if p2 else 'Invalid'
         cnt[tag] += 1
         groups[tag].append(node)
-    groups['Invalid'] += list(dead.values())   # 历史死单并入
+    groups['Invalid'] += list(dead.values())   # 已拉黑死单续写,保住轮数不被清零
     for t, nodes in groups.items():            # 与主产物一致,按地区码升序
         nodes.sort(key=lambda l: (l.rpartition('#')[2], l))
         with open(os.path.join(_SCRIPT_DIR, f'Senflare-Proxy-{t}.txt'), 'w', encoding='utf-8') as f:
@@ -558,10 +573,10 @@ def main():
     all_new, all_total = update_all_file(direct_nodes + test_nodes)
 
     # 单遍 P1×P2 探测:免测组同样参与分类,但其结果只作标记、不设主产物门槛
-    dead = load_dead_list()                  # 死单记忆:双探针全挂过的节点本轮整批跳过
+    dead = load_dead_list()                  # 死单记忆:连续 DEAD_ROUNDS 轮双挂的节点本轮整批跳过
     skip = sum(1 for n in direct_nodes + test_nodes if node_addr(n) in dead)
     if skip:
-        print(f'⏭️ 死单跳过 {fmt(skip)} 个(历史无效节点不再探测)')
+        print(f'⏭️ 死单跳过 {fmt(skip)} 个(连续 {DEAD_ROUNDS} 轮双挂已拉黑,不再探测)')
     probed = run_probe_tests([n for n in direct_nodes + test_nodes if node_addr(n) not in dead])
     direct_keys = {node_addr(n) for n in direct_nodes}
     cnt, dead_total = write_class_files(probed, dead)
@@ -599,10 +614,14 @@ def main():
 
     print(f'\n💾 已写入 {OUTPUT_FILE}：只拉取 {fmt(len(direct_nodes))} + '
           f'测试通过 {fmt(len(test_final))} = 合并 {fmt(len(final_nodes))} 个')
-    print(f'🧭 三分类:{dict(cnt)} · 死单累计 {fmt(dead_total)}')
+    print(f'🧭 三分类:{dict(cnt)} · Invalid 在册 {fmt(dead_total)}（满 {DEAD_ROUNDS} 轮才拉黑）')
     print(f'📚 采集总库:本轮 {fmt(all_new)} · 累计 {fmt(all_total)} → {ALL_FILE}')
     print(f'\n🎉 全部完成 · 耗时 {time.time() - started:.0f} 秒')
 
 
 if __name__ == '__main__':
+    # 自检：未满 DEAD_ROUNDS 的节点不进死单（下轮照常复测），满轮数才拉黑
+    probe = ['1.1.1.1:443#US', '2.2.2.2:443#US']
+    assert not load_dead_list(probe * (DEAD_ROUNDS - 1)), '未满轮数不应拉黑'
+    assert len(load_dead_list(probe * DEAD_ROUNDS)) == 2, '满轮数应拉黑'
     main()
