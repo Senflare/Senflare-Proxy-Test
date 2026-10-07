@@ -141,7 +141,7 @@ OUTPUT_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy.txt')
 ALL_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-All.txt')  # 历史采集总库：所有从源采集过的节点,累积去重
 INVALID_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-Invalid.txt')  # 无效死单（累积）：记忆双探针全挂的节点,下轮跳过探测
 PROGRESS_INTERVAL = 1     # 进度打印刷新间隔（秒）
-TEST_LIMIT = 30           # 试跑：每组只取前 N 个（0 = 全量）
+TEST_LIMIT = 0            # 试跑：每组只取前 N 个（0 = 全量）
 
 
 # ============================================================================
