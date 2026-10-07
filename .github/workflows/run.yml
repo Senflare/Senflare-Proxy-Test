@@ -3,7 +3,7 @@ name: Senflare Proxy Test
 # 定时跑优选测试：拉取多源 → 三分类探测 → 地区补全 → 提交结果文件
 on:
   schedule:
-    - cron: '23 */3 * * *'    # 每 3 小时一次（UTC，避开整点高峰）
+    - cron: '23 */6 * * *'    # 每 6 小时一次（UTC：00/06/12/18:23 = 北京 08/14/20/次日02:23，避开整点高峰）
   workflow_dispatch:           # 支持手动触发
 
 permissions:
