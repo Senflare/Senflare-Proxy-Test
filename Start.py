@@ -514,7 +514,7 @@ def write_class_files(probed, dead):
     for t, nodes in groups.items():            # 与主产物一致,按地区码升序
         nodes.sort(key=lambda l: (l.rpartition('#')[2], l))
         with open(os.path.join(_SCRIPT_DIR, f'Senflare-Proxy-{t}.txt'), 'w', encoding='utf-8') as f:
-            f.write('\n'.join(nodes) + '\n')
+            f.write('\n'.join(nodes) + '\n' if nodes else '')
     return cnt, len(dead) + sum(1 for r in probed if not r[1] and not r[4])
 
 
