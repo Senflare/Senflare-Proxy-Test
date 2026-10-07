@@ -10,17 +10,14 @@ import io
 import ipaddress
 import json
 import os
-import socket
-import ssl
+import subprocess
 import sys
 import time
-import http.client
 import urllib.request
 import urllib.error
 from collections import OrderedDict, Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlencode, quote
-
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlencode
 from SourceParse import parse_source
 
 # 控制台输出统一为 UTF-8
@@ -32,8 +29,8 @@ for _stream in (sys.stdout, sys.stderr):
 # 一、配置列表
 # ============================================================================
 
-# —— 免测数据 ——
-DIRECT_SOURCES = {
+# —— 数据源 ——
+SOURCES = {
     # 项目作者：Xiaobei09
     # 项目地址：https://github.com/Xiaobei09/proxyip
     # 项目来源：Cmliu（zip.cm.edu.kg/all.txt）/ Wentao883（TG-wxgqlfx_ZBDW）/ ChatBotPlus（cf-proxyips）/ Ymyuuu（IPDB BestProxy）/ Mountain787（Lunch-Bag-ip）
@@ -48,10 +45,6 @@ DIRECT_SOURCES = {
         'fallbackUrl': 'https://cdn.jsdelivr.net/gh/papapapapdelesia/Emilia@main/Data/alive.txt',
         'columns': (0, 1, 2, False),
     },
-}
-
-# —— 待测数据 ——
-TEST_SOURCES = {
     # 项目作者：Xgonce
     # 项目地址：https://github.com/xgonce/Cloudflare_IP
     'Xgonce': {
@@ -111,26 +104,13 @@ FETCH_RETRIES = 5
 FETCH_RETRY_DELAY = 2     # 相邻两次拉取之间的等待（秒）
 FETCH_TIMEOUT = 10        # 数据源拉取超时（秒）
 
-P1_ENABLED = True  # P1 真 CF 验证开关（关闭时漏斗组不设门槛，直接进主产物）
-P1_METHOD = 'HEAD' # HEAD 或 GET
-P1_TIMEOUT = 3     # 单次 HTTP 响应超时（秒）
-P1_SAMPLES = 3   # HTTP 延迟采样次数
-P1_WORKERS = 100   # HTTP 并发线程数
-
-# —— P2 入口探测 + P3 反代检测（主:OTC 引擎 API / 备:Cmliu 检测接口）——
-P2_TIMEOUT = 4         # P2 单次探测超时（秒）
-P2_RETRIES = 1         # P2 握手异常重试次数（收到响应即定论，不重试）
-P2_RETRY_DELAY = 1     # P2 重试前退避（秒）
-P2_SNI = 'www.cloudflare.com'   # 入口探测的 SNI/Host 域名
-P3_API = 'https://api.ytb1.dns-dynamic.net/check'  # P3 主检测接口（引擎直连 公共 API 逐个调用保持克制）
-P3_FALLBACK_API = 'https://api.090227.xyz/check'  # P3 备用检测接口（Cmliu,主接口未判有效时回落）
-P3_TIMEOUT = 120          # P3 主接口单次请求超时（秒）
-P3_FALLBACK_TIMEOUT = 30  # P3 备用接口单次请求超时（秒）
-P3_DELAY = 3              # 相邻两次请求间隔（秒）
-P3_RETRIES = 2            # 单节点重试次数
-TLS_CTX = ssl.create_default_context()
-TLS_CTX.check_hostname = False
-TLS_CTX.verify_mode = ssl.CERT_NONE
+# —— P3 CF 内判定（OTC 引擎 Worker 真实 connect，探测点固定在 Cloudflare）——
+P3_BATCH_URL = 'https://check.proxyip.zzzzzz.hidns.vip/?ip={ips}'  # OTC 批量接口，逗号分隔；同一引擎也提供 /check?proxyip= 单节点版
+P3_BATCH = 25         # 单次请求的 IP 数：源码无数量限制，但单请求有约 60s 墙钟，超预算的探测被静默标成无效（实测 n>=50 开始丢，n=100 丢 44/100），25 可复现不丢
+P3_PARALLEL = 8       # 并发批量数（实测 8 已饱和：200 节点 26s，20 并发无增益）
+P3_TIMEOUT = 90       # 单次批量请求超时（秒）
+P3_FALLBACK_API = 'https://api.090227.xyz/check'  # 备用单节点接口（Cmliu），主接口整体不可用时逐个回落
+P3_FALLBACK_TIMEOUT = 30
 
 # —— 地区补全：ipinfo lite ——
 REGION_API = 'https://api.ipinfo.io/lite/{ip}?token=2cb674df499388'
@@ -141,10 +121,10 @@ REGION_TIMEOUT = 5         # 单次查询超时（秒）
 
 OUTPUT_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy.txt')
 ALL_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-All.txt')  # 历史采集总库：所有从源采集过的节点,累积去重
-INVALID_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-Invalid.txt')  # 无效死单（累积）：同一节点连续 DEAD_ROUNDS 轮双探针全挂才拉黑，未满轮数照常复测
-DEAD_ROUNDS = 3        # 连续几轮双挂才拉入死单（1 = 旧行为，误杀率极高）
+INVALID_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-Invalid.txt')  # CF 内判定连续无效的节点：同一节点连续 DEAD_ROUNDS 轮无效才拉黑，未满轮数照常复测
+DEAD_ROUNDS = 3        # 连续几轮判定无效才拉黑（1 = 旧行为，抖动一次就永久出局）
 PROGRESS_INTERVAL = 1     # 进度打印刷新间隔（秒）
-TEST_LIMIT = 0            # 试跑：每组只取前 N 个（0 = 全量）
+TEST_LIMIT = 0            # 试跑：每源只取前 N 个（0 = 全量）
 
 
 # ============================================================================
@@ -183,7 +163,8 @@ def fetch_text(url, timeout=FETCH_TIMEOUT):
 
 
 def load_nodes():
-    """拉取两组源 → 归一化 → 按 ip:port 去重（待测组跳过免测组已有 IP） 返回 (direct_nodes, test_nodes)"""
+    """拉取全部数据源 → 归一化 → 按 ip:port 去重 返回节点列表
+    两组源已合并为 SOURCES：判定改为 CF 内统一判定后，"免测/待测"不再影响任何行为"""
     def fetch_group(sources, seen=None):
         seen = seen if seen is not None else set()
         nodes = []
@@ -218,152 +199,75 @@ def load_nodes():
             print(f'🌐 [{name}] 新增 {fmt(count)} 个节点')
         return nodes
 
-    direct_nodes = fetch_group(DIRECT_SOURCES)
-    test_nodes = fetch_group(TEST_SOURCES, seen={n.rpartition('#')[0] for n in direct_nodes})
-    print(f'\n📊 组内去重后共 {fmt(len(direct_nodes) + len(test_nodes))} 个节点'
-          f'（只拉取 {fmt(len(direct_nodes))} · 需测试 {fmt(len(test_nodes))}）')
-    return direct_nodes, test_nodes
+    nodes = fetch_group(SOURCES)
+    print(f'\n📊 去重后共 {fmt(len(nodes))} 个节点')
+    return nodes
 
 
 # ============================================================================
-# 三、三分类探测(P1 真 CF 验证 + P2 入口透传)
+# 三、CF 内判定（OTC 引擎 Worker 真实 connect，探测点固定在 Cloudflare）
 # ============================================================================
 
-def recv_all(sock):
-    """读到对端关闭或超时,返回完整响应"""
-    sock.settimeout(P2_TIMEOUT)
-    data = b''
+def parse_ms(text):
+    """OTC 返回的响应时间（'5ms' / '1.2s'）→ 毫秒；解析不了返回 0"""
     try:
-        while len(data) < 8192:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-    except socket.timeout:
+        v = str(text).strip()
+        if v.endswith('ms'):
+            return float(v[:-2])
+        if v.endswith('s'):
+            return float(v[:-1]) * 1000
+    except (ValueError, TypeError):
         pass
-    return data
+    return 0.0
 
 
-def probe_forward(ip, port):
-    """P2 入口探测:TLS+SNI 透传,响应带 cf-ray 即达 CF 边缘(不看状态码)
-    边界:握手/传输异常按 P2_RETRIES 重试(可判为抖动),握手成功但无 cf-ray 是明确结论,立即返回"""
-    for attempt in range(P2_RETRIES + 1):
-        try:
-            with socket.create_connection((ip, int(port)), timeout=P2_TIMEOUT) as s:
-                with TLS_CTX.wrap_socket(s, server_hostname=P2_SNI) as t:
-                    t.sendall(f'HEAD /cdn-cgi/trace HTTP/1.1\r\nHost: {P2_SNI}\r\nConnection: close\r\n\r\n'.encode())
-                    return b'cf-ray' in recv_all(t).lower()
-        except Exception:
-            if attempt < P2_RETRIES:
-                time.sleep(P2_RETRY_DELAY)
-    return False
-
-
-UA_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                            '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'}
-
-
-def check_http(node):
-    """P1 出口探测：http://ip:port/cdn-cgi/trace 返回 400 且 server 以 cloudflare 开头才算真 CF 返回 (node, 通过, 平均延迟ms, 抖动ms)
-    边界:rounds 次采样需全部拿到合规响应才算通过;连接异常/超时只算当次失败并继续下一采样(重试),
-    收到明确但不符的响应(如非 CF 的 400)立即判失败,不浪费采样"""
-    host, _, port = node_addr(node).rpartition(':')
-    rounds = max(3, P1_SAMPLES)
-    latencies = []
-    for _ in range(rounds):
-        conn = http.client.HTTPConnection(host.strip('[]'), int(port), timeout=P1_TIMEOUT)
-        try:
-            start = time.time()
-            conn.request(P1_METHOD, '/cdn-cgi/trace', headers=UA_HEADERS)
-            resp = conn.getresponse()
-            lat = (time.time() - start) * 1000
-            resp.read()
-        except Exception:
-            continue
-        finally:
-            conn.close()
-        if resp.status != 400:
-            return node, False, 0.0, 0.0
-        server = resp.getheader('server', '')
-        if not server.lower().startswith('cloudflare'):
-            return node, False, 0.0, 0.0
-        latencies.append(lat)
-    if len(latencies) < rounds:
-        return node, False, 0.0, 0.0
-    avg = sum(latencies) / len(latencies)
-    jitter = (sum((x - avg) ** 2 for x in latencies) / len(latencies)) ** 0.5
-    return node, True, avg, jitter
-
-
-def run_probe_tests(nodes):
-    """单遍 P1×P2 探测：P1 真 CF 验证（三采样）+ P2 入口透传 返回 [(node, p1_ok, avg, jitter, p2_ok)]"""
-    total = len(nodes)
-    done, last_print = 0, time.time()
-    results, p1_ok_n, p2_ok_n = [], 0, 0
-    print(f'\n🧭 ── 三分类探测 ── {fmt(total)} 个节点 · '
-          f'P1 {P1_METHOD} /cdn-cgi/trace 采样 {max(3, P1_SAMPLES)} 次 · P2 TLS+SNI · 并发 {P1_WORKERS}')
-
-    def work(node):
-        if P1_ENABLED:
-            _, p1, avg, jitter = check_http(node)
-        else:
-            p1, avg, jitter = True, 0.0, 0.0
-        host, _, port = node_addr(node).rpartition(':')
-        return node, p1, avg, jitter, probe_forward(host.strip('[]'), port)
-
-    with ThreadPoolExecutor(max_workers=P1_WORKERS) as pool:
-        futures = {pool.submit(work, n): n for n in nodes}
-        for fut in as_completed(futures):
-            node, p1, avg, jitter, p2 = fut.result()
-            results.append((node, p1, avg, jitter, p2))
-            p1_ok_n += p1
-            p2_ok_n += p2
-            done += 1
-            now = time.time()
-            if now - last_print >= PROGRESS_INTERVAL or done == total:
-                print(f'\r⏳ 探测进度 {fmt(done)}/{fmt(total)} · P1 通过 {fmt(p1_ok_n)} · P2 通过 {fmt(p2_ok_n)}   ',
-                      end='', flush=True)
-                last_print = now
-    print(f'\n✅ 探测完成 · P1 通过 {fmt(p1_ok_n)} / {fmt(total)} · P2 通过 {fmt(p2_ok_n)} / {fmt(total)}')
-    return results
+def p3_probe_batch(batch):
+    """单次批量请求 → {addr: (有效, 延迟ms, 原因)}；返回条数可能少于请求数（墙钟截断），由调用方核对
+    必须走 curl 子进程：该接口挂在 CF 机器人防护后，urllib 一律 403"""
+    url = P3_BATCH_URL.format(ips=','.join(batch))
+    raw = subprocess.run(['curl', '-s', '--max-time', str(P3_TIMEOUT), url],
+                         capture_output=True).stdout
+    try:
+        data = json.loads(raw.decode('utf-8', 'ignore'))
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    return {d['目标']: (d.get('有效ProxyIP') is True, parse_ms(d.get('响应时间')),
+                        str(d.get('失败原因', '')))
+            for d in data if isinstance(d, dict) and d.get('目标')}
 
 
 def p3_check(addrs):
-    """P3 反代检测:逐个直连 OTC 引擎 API(Worker 内真连接验证) 返回 {addr: (是否有效, 失败原因)},流水线不自动调用,手动用"""
-    out, headers = {}, {'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    total = len(addrs)
-    for i, addr in enumerate(addrs, 1):
-        url = f'{P3_API}?proxyip={quote(addr, safe=":,.[]")}'
-        data = None
-        for attempt in range(1, P3_RETRIES + 1):
-            try:
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=P3_TIMEOUT) as r:
-                    data = json.loads(r.read().decode('utf-8'))
-                break
-            except Exception as e:
-                if attempt == P3_RETRIES:
-                    print(f'\n⚠️ P3 检测失败({addr}):{e}')
-                else:
-                    time.sleep(P3_DELAY)
-        if isinstance(data, dict):
-            ok = data.get('有效ProxyIP', data.get('有效代理IP'))
-            ok, reason = ok is True, str(data.get('失败原因', ''))
-        else:
-            ok, reason = False, '无返回结果'
-        if not ok:                       # 主接口未判有效 → Cmliu 备用接口回落
-            fb = p3_check_fallback(addr)
-            if fb is not None:
-                ok, reason = fb
-        out[addr] = (ok, reason)
-        print(f'\r⏳ P3 检测 {i}/{total} · 有效 {sum(1 for v in out.values() if v[0])}   ', end='', flush=True)
-        time.sleep(P3_DELAY)
-    print()
+    """全量 CF 内判定：切 P3_BATCH 一批、并发 P3_PARALLEL 路；整批失败或被截断的逐个回落 Cmliu
+    返回 {addr: (有效, 延迟ms, 原因)}"""
+    batches = [addrs[i:i + P3_BATCH] for i in range(0, len(addrs), P3_BATCH)]
+    print(f'\n🧭 ── CF 内判定 ── {fmt(len(addrs))} 个节点 · OTC 批量 {P3_BATCH}/次 · '
+          f'并发 {P3_PARALLEL} · 共 {len(batches)} 批')
+    out, done, last = {}, 0, time.time()
+
+    def work(batch):
+        got = p3_probe_batch(batch)
+        if got is None or len(got) != len(batch):   # 整体失败或被约 60s 墙钟截断 → 不能信，逐个回落
+            fb = {a: p3_check_fallback(a) for a in batch}
+            return {a: (*(fb[a] or (False, '主接口与备用接口均无结果')), 0.0) for a in batch}
+        return {a: got.get(a, (False, 0.0, '批量接口漏返')) for a in batch}
+
+    with ThreadPoolExecutor(P3_PARALLEL) as pool:
+        for batch, res in zip(batches, pool.map(work, batches)):
+            out.update(res)
+            done += len(batch)
+            now = time.time()
+            if now - last >= PROGRESS_INTERVAL:
+                print(f'\r⏳ 判定进度 {fmt(done)}/{fmt(len(addrs))} · '
+                      f'有效 {fmt(sum(1 for v in out.values() if v[0]))}   ', end='', flush=True)
+                last = now
+    print(f'\n✅ 判定完成 · 有效 {fmt(sum(1 for v in out.values() if v[0]))} / {fmt(len(addrs))}')
     return out
 
 
 def p3_check_fallback(addr):
-    """P3 备用检测:Cmliu 接口 success 字段判有效 返回 (有效, 原因),无法判定返回 None"""
+    """备用单节点检测：Cmliu 接口 success 字段判有效 返回 (有效, 原因)，无法判定返回 None"""
     try:
         qs = urlencode({'proxyip': addr})
         req = urllib.request.Request(f'{P3_FALLBACK_API}?{qs}',
@@ -503,7 +407,7 @@ def ensure_regions(nodes):
 def load_dead_list(lines=None):
     """筛出已拉黑的死单:同一节点连续 DEAD_ROUNDS 轮双探针全挂才入选,未满轮数本轮照常复测
     lines 为 None 时读 Invalid 文件。write_class_files 每轮给每个死单只写一行,
-    故行数即连续双挂轮数;节点某轮复活后不再写入,计数自然清零
+    故行数即连续无效轮数;节点某轮判定通过后不再写入,计数自然清零
     """
     if lines is None:
         lines = [l.strip() for l in open(INVALID_FILE, encoding='utf-8')] if os.path.exists(INVALID_FILE) else []
@@ -517,22 +421,22 @@ def load_dead_list(lines=None):
 
 
 def write_class_files(probed, dead):
-    """按 P2 主判据落盘分类文件,Invalid 每轮给已拉黑死单续写一行(维持连续双挂轮数);返回 (本轮计数, Invalid 总行数)
-    Bidirectional = P2 通过 = TLS 入口与 Worker 出口同一条透传链路,双向都能站(实测 TLS-only 反代当 Worker 出口回 200 OK)
-    Plaintext = P2 失败但 P1 通过 = 只收明文 HTTP,现代 HTTPS 站点与 Worker 都用不上
-    Invalid = 双探针全挂 = 从本探测点不可达(非"已死",见 代理分类与测试.md)"""
-    groups = {t: [] for t in ('Bidirectional', 'Plaintext', 'Invalid')}
+    """按 CF 内判定结果落盘分类文件；Invalid 每轮给已拉黑节点续写一行（维持连续无效轮数）
+    Bidirectional = 判定通过 = 该节点确实在转发到 Cloudflare，对所有用户一致可用
+    Invalid = 判定不通过 = CF 内连不通；连续 DEAD_ROUNDS 轮才拉黑，未满轮数下轮照常复测
+    返回 (本轮计数, Invalid 总行数)"""
+    groups = {t: [] for t in ('Bidirectional', 'Invalid')}
     cnt = Counter()
-    for node, p1, _, _, p2 in probed:
-        tag = 'Bidirectional' if p2 else 'Plaintext' if p1 else 'Invalid'
+    for node, ok, _lat, _reason in probed:
+        tag = 'Bidirectional' if ok else 'Invalid'
         cnt[tag] += 1
         groups[tag].append(node)
-    groups['Invalid'] += list(dead.values())   # 已拉黑死单续写,保住轮数不被清零
-    for t, nodes in groups.items():            # 与主产物一致,按地区码升序
+    groups['Invalid'] += list(dead.values())   # 已拉黑节点续写，保住轮数不被清零
+    for t, nodes in groups.items():            # 与主产物一致，按地区码升序
         nodes.sort(key=lambda l: (l.rpartition('#')[2], l))
         with open(os.path.join(_SCRIPT_DIR, f'Senflare-Proxy-{t}.txt'), 'w', encoding='utf-8') as f:
             f.write('\n'.join(nodes) + '\n' if nodes else '')
-    return cnt, len(dead) + sum(1 for r in probed if not r[1] and not r[4])
+    return cnt, len(groups['Invalid'])
 
 
 def update_all_file(nodes):
@@ -555,68 +459,43 @@ def main():
     started = time.time()
     print('🚀 Senflare Proxy Test 启动')
     if TEST_LIMIT > 0:
-        print(f'\n🧪 试跑模式：每组只取前 {fmt(TEST_LIMIT)} 个节点\n')
+        print(f'\n🧪 试跑模式：每个源只取前 {fmt(TEST_LIMIT)} 个节点\n')
 
-    direct_nodes, test_nodes = load_nodes()
+    nodes = load_nodes()
 
-    # 剔除 Cloudflare 官方网段（测试前清掉，省漏斗算力）
-    before = len(direct_nodes) + len(test_nodes)
-    direct_nodes = [n for n in direct_nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
-    test_nodes = [n for n in test_nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
-    cf_dropped = before - len(direct_nodes) - len(test_nodes)
-    if cf_dropped:
-        print(f'🧹 Cloudflare 官方网段剔除 {fmt(cf_dropped)} 个节点')
+    # 剔除 Cloudflare 官方网段（判定前清掉，省判定算力）
+    before = len(nodes)
+    nodes = [n for n in nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
+    if before - len(nodes):
+        print(f'🧹 Cloudflare 官方网段剔除 {fmt(before - len(nodes))} 个节点')
 
     if TEST_LIMIT > 0:
-        direct_nodes = direct_nodes[:TEST_LIMIT]
-        test_nodes = test_nodes[:TEST_LIMIT]
+        nodes = nodes[:TEST_LIMIT * len(SOURCES)]
 
-    # 历史采集总库:采集过的节点(免测+待测)全部累积
-    all_new, all_total = update_all_file(direct_nodes + test_nodes)
+    # 历史采集总库:本轮采集到的节点全部累积
+    all_new, all_total = update_all_file(nodes)
 
-    # 单遍 P1×P2 探测:免测组同样参与分类,但其结果只作标记、不设主产物门槛
-    dead = load_dead_list()                  # 死单记忆:连续 DEAD_ROUNDS 轮双挂的节点本轮整批跳过
-    skip = sum(1 for n in direct_nodes + test_nodes if node_addr(n) in dead)
-    if skip:
-        print(f'⏭️ 死单跳过 {fmt(skip)} 个(连续 {DEAD_ROUNDS} 轮双挂已拉黑,不再探测)')
-    probed = run_probe_tests([n for n in direct_nodes + test_nodes if node_addr(n) not in dead])
-    direct_keys = {node_addr(n) for n in direct_nodes}
+    # CF 内统一判定:探测点固定在 Cloudflare,结论对所有用户一致
+    dead = load_dead_list()          # 连续 DEAD_ROUNDS 轮判定无效的节点本轮整批跳过
+    todo = [n for n in nodes if node_addr(n) not in dead]
+    if len(nodes) - len(todo):
+        print(f'⏭️ 死单跳过 {fmt(len(nodes) - len(todo))} 个（连续 {DEAD_ROUNDS} 轮无效已拉黑）')
+    verdict = p3_check([node_addr(n) for n in todo])
+    probed = [(n, *verdict[node_addr(n)]) for n in todo]
     cnt, dead_total = write_class_files(probed, dead)
 
-    # 主产物门槛:免测组全收,漏斗组须 P1 或 P2 通过(三种代理全收,仅剔除双探针全挂的)
-    direct_nodes = ensure_regions(direct_nodes)
-    test_passed = [r for r in probed if node_addr(r[0]) not in direct_keys and (r[1] or r[4])]
-    meta = {node_addr(r[0]): (r[2], r[3]) for r in test_passed}
-    filled = ensure_regions([r[0] for r in test_passed])
-    test_final = [(n,) + meta[node_addr(n)] for n in filled]
-
-    if not direct_nodes and not test_final:
-        print('❌ 没有任何有效节点，退出')
+    # 主产物门槛 = 判定通过,按 CF 内响应时间升序
+    passed = sorted((r for r in probed if r[1]), key=lambda r: r[2] or float('inf'))
+    final_nodes = ensure_regions([r[0] for r in passed])
+    if not final_nodes:
+        print('❌ 没有任何判定通过的节点，退出')
         sys.exit(1)
-
-    # 合并输出：免测组在前，测试组按延迟升序 去重兜底
-    test_final.sort(key=lambda x: x[1] if x[1] > 0 else float('inf'))
-    final_seen, final_nodes = set(), []
-    dup = 0
-    for node in direct_nodes + [p[0] for p in test_final]:
-        key = node.rpartition('#')[0]
-        if key in final_seen:
-            dup += 1
-            continue
-        final_seen.add(key)
-        final_nodes.append(node)
-    if dup:
-        print(f'🧹 合并去重移除重复节点 {fmt(dup)} 个')
-
-    # 按国家码升序分组，同国内保持原有（来源/延迟）顺序
-    final_nodes.sort(key=lambda n: n.rpartition('#')[2])
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write('\n'.join(final_nodes) + '\n')
 
-    print(f'\n💾 已写入 {OUTPUT_FILE}：只拉取 {fmt(len(direct_nodes))} + '
-          f'测试通过 {fmt(len(test_final))} = 合并 {fmt(len(final_nodes))} 个')
-    print(f'🧭 分类:{dict(cnt)} · Invalid 在册 {fmt(dead_total)}（本探测点不可达，满 {DEAD_ROUNDS} 轮才拉黑）')
+    print(f'\n💾 已写入 {OUTPUT_FILE}：{fmt(len(final_nodes))} 个判定通过的节点')
+    print(f'🧭 分类:{dict(cnt)} · Invalid 在册 {fmt(dead_total)}（满 {DEAD_ROUNDS} 轮无效才拉黑）')
     print(f'📚 采集总库:本轮 {fmt(all_new)} · 累计 {fmt(all_total)} → {ALL_FILE}')
     print(f'\n🎉 全部完成 · 耗时 {time.time() - started:.0f} 秒')
 
@@ -626,4 +505,6 @@ if __name__ == '__main__':
     probe = ['1.1.1.1:443#US', '2.2.2.2:443#US']
     assert not load_dead_list(probe * (DEAD_ROUNDS - 1)), '未满轮数不应拉黑'
     assert len(load_dead_list(probe * DEAD_ROUNDS)) == 2, '满轮数应拉黑'
+    # 自检：响应时间解析
+    assert (parse_ms('5ms'), parse_ms('1.2s'), parse_ms('x')) == (5.0, 1200.0, 0.0)
     main()

@@ -9,21 +9,19 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 ## ✨ 工作流程
 
 ```
-拉取多源 → 组内去重 → 剔除 Cloudflare 官方网段
-  └─ 全量节点 → 读死单记忆（连续 3 轮双挂才跳过探测）→ P1×P2 探测（单遍完成）
-        ├─ 免测数据：直接汇入主产物（上游有实测流水线，探测结果仅作分类标记）
-        ├─ 漏斗组 P1 或 P2 通过：汇入主产物（按 P1 延迟排序）
-        └─ 按 P2 主判据分类 → Senflare-Proxy-Bidirectional / Plaintext / Invalid.txt
-主产物 → 地区补全 → 合并去重 → Senflare-Proxy.txt
+拉取多源（10 源） → 全局去重 → 剔除 Cloudflare 官方网段
+  └─ 全量节点 → 读死单记忆（连续 3 轮无效才跳过）→ CF 内统一判定
+        ├─ 判定通过：汇入主产物（按 CF 内响应时间升序）
+        └─ 判定不通过：记 Invalid，连续 3 轮才拉黑
+主产物 → 地区补全 → Senflare-Proxy.txt
 ```
 
 | 层 | 说明 |
 |---|---|
-| P1 明文探测 | `HEAD /cdn-cgi/trace` 必须返回 400 且 `server: cloudflare*`（CF 的 1003 响应），证明节点真转发到 Cloudflare 三采样计算延迟/抖动（100 并发）附属标记，不参与正反向判定 |
-| P2 TLS 探测（分类主判据） | TLS 握手 SNI=www.cloudflare.com，响应带 `cf-ray` 即透传成功。入口与 Worker 出口是同一条透传链路，**P2 通过即双向**；失败再看 P1 分「仅明文」与「探测点不可达」 |
+| CF 内统一判定 | OTC 引擎 Worker 在 Cloudflare 内真实 `connect()` 节点并完成 TLS 握手，拿到 CF 边缘响应才算通过（批量接口，curl，8 并发 × 25/次）。**探测点固定在 CF，结论对所有用户一致可复现** —— 外部探针做不到，它的结论只对探测者那个网络成立 |
 | 地区补全 | 无地区码的节点调 [ipinfo.io lite](https://ipinfo.io) 补齐 本地 LRU 缓存 1 万条，重复 IP 不重复查询 |
 
-拉取主走 raw 直链（推送即生效），jsDelivr 仅作备用 源配置、格式解析（`SourceParse.py`）、探测与终审全部在 `Start.py`。
+判定依据与正反向的定义见 [`代理分类与测试.md`](代理分类与测试.md)。拉取主走 raw 直链（推送即生效），jsDelivr 仅作备用；源配置与格式解析（`SourceParse.py`）、判定与终审全部在 `Start.py`。
 
 ## 📡 数据来源
 
@@ -39,18 +37,18 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 157.22.240.45:8443#AR
 ```
 
-合并去重（同组内按 P1 延迟升序）后按地区码升序输出，跨组按 `ip:port` 去重
+判定通过后按 CF 内响应时间升序，再按地区码升序输出
 兼容解析：干净标签、emoji 国旗富标签、竖线分段、空格分隔、纯 IP（默认 443 端口）、CSV 列位、分组 JSON
 
-分类产物（探测方案详见 [代理分类与测试.md](代理分类与测试.md)）：
+分类产物（判定方案详见 [代理分类与测试.md](代理分类与测试.md)）：
 
-- `Senflare-Proxy-Bidirectional.txt`（双向可用）/ `Senflare-Proxy-Plaintext.txt`（仅明文可用）：**P2 通过即双向**——TLS 入口与 Worker 出口是同一条透传链路；P2 失败但 P1 通过的只收明文 HTTP，现代 HTTPS 站点与 Worker 都用不上
-- `Senflare-Proxy-Invalid.txt`（探测点不可达）：双探针全挂的节点每轮记一行，行数即连续双挂轮数；连续 3 轮才拉黑跳过探测，节点复活后计数自然清零（删行也可人工降轮数）。**注意这是「从探测点不可达」不是「已死」**——机房 IP 常被反代节点限流，同一节点在住宅网络往往完全正常，详见 `代理分类与测试.md`
-- `Senflare-Proxy-All.txt`：历史采集总库——从各源采集过的节点全部累积（含测试未通过的），按 `ip:port` 去重、只增不减
+- `Senflare-Proxy-Bidirectional.txt`（判定通过）：OTC 引擎在 Cloudflare 内真实 connect 该节点并拿到 CF 边缘响应。探测点固定在 CF，所以结论对所有用户一致可复现 —— 入口与 Worker 出口是同一条透传链路，双向都能站
+- `Senflare-Proxy-Invalid.txt`（判定不通过）：每轮给每个无效节点记一行，行数即连续无效轮数；连续 3 轮才拉黑跳过判定，某轮通过后计数自然清零（删行也可人工降轮数）
+- `Senflare-Proxy-All.txt`：历史采集总库——从各源采集过的节点全部累积（含判定未通过的），按 `ip:port` 去重、只增不减
 
 ## 💻 本地运行
 
-零第三方依赖，Python 3.8+ 直接跑（`Start.py` 与解析模块 `SourceParse.py` 需在同一目录）：
+零第三方依赖，Python 3.8+ 直接跑（`Start.py` 与解析模块 `SourceParse.py` 需在同一目录）。判定走 OTC 批量接口，脚本内部调 `curl` 子进程（该接口挂在 CF 机器人防护后，`urllib` 会被 403），所以系统需有 curl：
 
 ```bash
 python Start.py
@@ -63,8 +61,9 @@ python Start.py
 仓库自带 [`.github/workflows/run.yml`](.github/workflows/run.yml)：
 
 - ⏰ 每 6 小时自动运行一次（UTC 00/06/12/18:23 = 北京 08/14/20/次日 02:23），支持手动触发
-- 💾 运行结束自动提交 `Senflare-Proxy.txt`、地区缓存与五个分类文件回仓库
-- 🔁 带 concurrency 防重入，无变化跳过提交
+- ⏱️ 单轮约 70 分钟（3.2 万节点 × 8 并发批量判定），workflow 超时设 90 分钟。GitHub 的 schedule 是尽力而为队列，实际启动时刻可能延后
+- 💾 运行结束自动提交 `Senflare-Proxy.txt`、地区缓存与分类文件回仓库
+- 🔁 带 concurrency 防重入，无变化跳过提交；运行期间有人推代码则 rebase 后再推
 
 ## 🙏 致谢
 
