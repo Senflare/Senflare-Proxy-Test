@@ -1,6 +1,6 @@
 name: Senflare Proxy Test
 
-# 定时跑优选测试：拉取多源 → CF 内统一判定 → 地区补全 → 提交结果文件
+# 定时跑能力探测：拉取多源 → A×B 四格判定 → 地区补全 → 提交结果文件
 on:
   schedule:
     - cron: '23 */6 * * *'    # 每 6 小时一次（UTC：00/06/12/18:23 = 北京 08/14/20/次日02:23，避开整点高峰）
@@ -16,7 +16,7 @@ concurrency:                    # 上一次还没跑完时不叠加新任务
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 90       # 全量约 3.2 万节点，OTC 批量实测 7.7 节点/秒 → 约 70 分钟
+    timeout-minutes: 120      # 全量约 3 万节点；A 入口 200 并发试 3 次，B 出口双接口 100 并发
     steps:
       - name: 📦 检出仓库
         uses: actions/checkout@v4
