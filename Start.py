@@ -113,8 +113,10 @@ FETCH_RETRY_DELAY = 2     # 相邻两次拉取之间的等待（秒）
 FETCH_TIMEOUT = 10        # 数据源拉取超时（秒）
 
 # —— A 入口能力（外部 TLS+SNI）——
-ENTRY_TIMEOUT = 8       # 单节点超时（秒）
-ENTRY_WORKERS = 100
+ENTRY_TIMEOUT = 5       # 单节点超时（秒）
+ENTRY_WORKERS = 200
+ENTRY_TRIES = 3         # 每节点最多试几次，任一次成功即通过
+ENTRY_RETRY_DELAY = 1   # 重试间隔（秒）
 ENTRY_SNI = 'www.cloudflare.com'
 ENTRY_REQUEST = f'HEAD /cdn-cgi/trace HTTP/1.1\r\nHost: {ENTRY_SNI}\r\nConnection: close\r\n\r\n'.encode()
 TLS_CTX = ssl.create_default_context()
@@ -127,8 +129,6 @@ CHECK_PARALLEL = 100   # 并发只调这里
 CHECK_TIMEOUT = 60
 FALLBACK_API = 'https://api.090227.xyz/check'  # 备用（Cmliu，独立引擎）
 FALLBACK_TIMEOUT = 30
-FALLBACK_PARALLEL = 16  # 备用上限（24 起丢）；信号量硬卡
-_CMLIU_SEM = threading.Semaphore(FALLBACK_PARALLEL)
 
 # —— 地区补全：ipinfo lite ——
 REGION_API = 'https://api.ipinfo.io/lite/{ip}?token=2cb674df499388'
@@ -141,7 +141,6 @@ OUTPUT_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy.txt')
 ALL_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-All.txt')  # 历史采集总库：所有从源采集过的节点,累积去重
 INVALID_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-Invalid.txt')  # 失败总表：累积所有判定无效的节点，只增（复活）不减（人工可删行）
 RESCUE_SAMPLE = 500      # 每轮从失败总表随机抽这么多复测，通过的救回主产物/分类，不过的继续留表
-PROGRESS_INTERVAL = 1     # 进度打印刷新间隔（秒）
 TEST_LIMIT = 0            # 试跑：每源只取前 N 个（0 = 全量）
 
 
@@ -226,7 +225,7 @@ def load_nodes():
 
 
 # ============================================================================
-# 三、CF 内判定（OTC 引擎 Worker 真实 connect，探测点固定在 Cloudflare）
+# 三、出口能力探测（OTC 引擎在 CF 内真实 connect）
 # ============================================================================
 
 def recv_all(sock):
@@ -245,15 +244,21 @@ def recv_all(sock):
 
 
 def probe_entry(addr):
-    """A 入口能力：外部 TLS+SNI 拿到 cf-ray 即入口可用（结论只对当前探测网络成立）"""
+    """A 入口能力：外部 TLS+SNI 拿到 cf-ray 即入口可用（结论只对当前探测网络成立）
+    最多试 ENTRY_TRIES 次，任一次成功即通过——A 是单点视角，抖动误杀代价高（好节点掉进失败总表）"""
     host, _, port = addr.rpartition(':')
-    try:
-        with socket.create_connection((host.strip('[]'), int(port)), timeout=ENTRY_TIMEOUT) as s:
-            with TLS_CTX.wrap_socket(s, server_hostname=ENTRY_SNI) as t:
-                t.sendall(ENTRY_REQUEST)
-                return b'cf-ray' in recv_all(t).lower()
-    except Exception:
-        return False
+    for attempt in range(ENTRY_TRIES):
+        try:
+            with socket.create_connection((host.strip('[]'), int(port)), timeout=ENTRY_TIMEOUT) as s:
+                with TLS_CTX.wrap_socket(s, server_hostname=ENTRY_SNI) as t:
+                    t.sendall(ENTRY_REQUEST)
+                    if b'cf-ray' in recv_all(t).lower():
+                        return True
+        except Exception:
+            pass
+        if attempt < ENTRY_TRIES - 1:
+            time.sleep(ENTRY_RETRY_DELAY)
+    return False
 
 
 def probe_entry_all(addrs):
@@ -263,7 +268,7 @@ def probe_entry_all(addrs):
     with ThreadPoolExecutor(ENTRY_WORKERS) as pool:
         for i, (addr, ok) in enumerate(zip(addrs, pool.map(probe_entry, addrs)), 1):
             out[addr] = ok
-            if i % 500 == 0 or i == len(addrs):
+            if i % ENTRY_WORKERS == 0 or i == len(addrs):
                 print(f'\r⏳ 入口探测 {fmt(i)}/{fmt(len(addrs))} · 可作入口 {fmt(sum(out.values()))}   ',
                       end='', flush=True)
     print(f'\n✅ 入口探测完成 · 可作入口 {fmt(sum(out.values()))} / {fmt(len(addrs))}')
@@ -284,7 +289,22 @@ def parse_ms(text):
 
 
 def check_exit_one(addr):
-    """单个节点 CF 内判定 → (有效, 延迟ms, 原因)；OTC 失败即回落 Cmliu"""
+    """单个节点出口能力 → (有效, 延迟ms, 原因)；OTC 与 Cmliu 同时查，任一判有效即通过
+    并发比串行回退快约一半：OTC 超时不再阻塞 Cmliu，且两者都判无效才输出无效"""
+    with ThreadPoolExecutor(2) as pool:
+        otc_f, cmliu_f = pool.submit(_check_otc, addr), pool.submit(check_fallback, addr)
+        otc_res, cmliu_res = otc_f.result(), cmliu_f.result()
+
+    if otc_res[0]:
+        return True, otc_res[1], ''
+    if cmliu_res and cmliu_res[0]:
+        return True, 0.0, ''
+    reason = otc_res[2] or (cmliu_res[1] if cmliu_res else '主备均无结果')
+    return False, 0.0, reason
+
+
+def _check_otc(addr):
+    """OTC 单节点 → (有效, 延迟ms, 原因)"""
     try:
         raw = subprocess.run(['curl', '-s', '--max-time', str(CHECK_TIMEOUT),
                               CHECK_URL.format(addr=addr)], capture_output=True).stdout
@@ -292,36 +312,28 @@ def check_exit_one(addr):
         if isinstance(d, dict):
             if d.get('有效ProxyIP') is True:
                 return True, parse_ms(d.get('响应时间')), ''
-            reason = str(d.get('失败原因', '') or '主接口判无效')
-        else:
-            reason = '主接口无有效返回'
+            return False, 0.0, str(d.get('失败原因', '') or '主接口判无效')
+        return False, 0.0, '主接口无有效返回'
     except Exception as e:
-        reason = f'主接口异常:{type(e).__name__}'
-    fb = check_fallback(addr)
-    return (fb[0], 0.0, fb[1]) if fb else (False, 0.0, reason or '主备均无结果')
+        return False, 0.0, f'主接口异常:{type(e).__name__}'
 
 
 def check_exit_all(addrs):
-    """全量 CF 内判定 → {addr: (有效, 延迟ms, 原因)}"""
-    print(f'\n🧭 ── CF 内判定 ── {fmt(len(addrs))} 个节点 · OTC 直连单节点 · 并发 {CHECK_PARALLEL}')
+    """全量出口能力探测 → {addr: (有效, 延迟ms, 原因)}"""
+    print(f'\n🧭 ── 出口能力探测 ── {fmt(len(addrs))} 个节点 · OTC 直连单节点 · 并发 {CHECK_PARALLEL}')
     out = {}
     with ThreadPoolExecutor(CHECK_PARALLEL) as pool:
         for i, (addr, res) in enumerate(zip(addrs, pool.map(check_exit_one, addrs)), 1):
             out[addr] = res
-            if i % 100 == 0 or i == len(addrs):
-                print(f'\r⏳ 判定进度 {fmt(i)}/{fmt(len(addrs))} · '
+            if i % CHECK_PARALLEL == 0 or i == len(addrs):
+                print(f'\r⏳ 出口探测 {fmt(i)}/{fmt(len(addrs))} · '
                       f'有效 {fmt(sum(1 for v in out.values() if v[0]))}   ', end='', flush=True)
-    print(f'\n✅ 判定完成 · 有效 {fmt(sum(1 for v in out.values() if v[0]))} / {fmt(len(addrs))}')
+    print(f'\n✅ 出口探测完成 · 有效 {fmt(sum(1 for v in out.values() if v[0]))} / {fmt(len(addrs))}')
     return out
 
 
 def check_fallback(addr):
-    """Cmliu 备用检测 → (有效, 原因) 或 None；并发由信号量硬卡 16"""
-    with _CMLIU_SEM:
-        return _fallback_locked(addr)
-
-
-def _fallback_locked(addr):
+    """Cmliu 备用检测 → (有效, 原因) 或 None"""
     try:
         qs = urlencode({'proxyip': addr})
         req = urllib.request.Request(f'{FALLBACK_API}?{qs}',
@@ -413,7 +425,7 @@ def ensure_regions(nodes):
     queried_ok = failed = limited = 0
     if pending_idx:
         total = len(pending_idx)
-        done, last_print = 0, time.time()
+        done = 0
         print(f'\n🌍 ── 地区补全 ── 待查 {fmt(total)} 个 · 缓存命中 {fmt(hits)} · '
               f'ipinfo lite · 并发 {REGION_WORKERS}')
 
@@ -441,10 +453,9 @@ def ensure_regions(nodes):
                     failed += 1
                     result[i] = None    # 补不到地区的剔除
                 now = time.time()
-                if now - last_print >= PROGRESS_INTERVAL or done == total:
+                if done % REGION_WORKERS == 0 or done == total:
                     print(f'\r⏳ 地区查询 进度 {fmt(done)}/{fmt(total)} · 成功 {fmt(queried_ok)}   ',
                           end='', flush=True)
-                    last_print = now
 
     if hits or pending_idx:
         save_region_cache(cache)

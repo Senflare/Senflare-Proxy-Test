@@ -26,18 +26,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 🔎 运行优选测试(拉源 → CF 内统一判定 → 产物)
+      - name: 🔎 运行能力探测
         run: python Start.py
 
-      - name: 💾 提交结果/地区缓存
+      - name: 💾 提交结果
+        run: |
+          # 分开 add：任一文件本次未生成不影响其他的暂存（提交在下一步统一做）
+          git add Senflare-Proxy.txt || true
+          git add Senflare-Proxy-All.txt || true
+          git add Senflare-Proxy-Bidirectional.txt Senflare-Proxy-Forward.txt Senflare-Proxy-Reverse.txt Senflare-Proxy-Invalid.txt || true
+
+      - name: 🗃️ 地区缓存
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # 分开 add：任一文件本次未生成（如无节点需查地区时没有缓存文件）不影响另一个的提交
-          git add Senflare-Proxy.txt || true
-          git add Senflare-Proxy-All.txt || true
           git add Senflare-Country.json || true
-          git add Senflare-Proxy-Bidirectional.txt Senflare-Proxy-Invalid.txt || true
           if git diff --cached --quiet; then
             echo "✅ 结果无变化，跳过提交"
           else
