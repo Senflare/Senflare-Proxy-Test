@@ -10,13 +10,17 @@ import io
 import ipaddress
 import json
 import os
+import random
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
 from collections import OrderedDict, Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode
 from SourceParse import parse_source
 
@@ -29,8 +33,8 @@ for _stream in (sys.stdout, sys.stderr):
 # 一、配置列表
 # ============================================================================
 
-# —— 数据源 ——
-SOURCES = {
+# —— 免测数据源（上游已有实测流水线，跳过 A×B 判定，直入主产物）——
+DIRECT_SOURCES = {
     # 项目作者：Xiaobei09
     # 项目地址：https://github.com/Xiaobei09/proxyip
     # 项目来源：Cmliu（zip.cm.edu.kg/all.txt）/ Wentao883（TG-wxgqlfx_ZBDW）/ ChatBotPlus（cf-proxyips）/ Ymyuuu（IPDB BestProxy）/ Mountain787（Lunch-Bag-ip）
@@ -45,6 +49,10 @@ SOURCES = {
         'fallbackUrl': 'https://cdn.jsdelivr.net/gh/papapapapdelesia/Emilia@main/Data/alive.txt',
         'columns': (0, 1, 2, False),
     },
+}
+
+# —— 待测数据源（走 A×B 四格判定）——
+TEST_SOURCES = {
     # 项目作者：Xgonce
     # 项目地址：https://github.com/xgonce/Cloudflare_IP
     'Xgonce': {
@@ -104,13 +112,23 @@ FETCH_RETRIES = 5
 FETCH_RETRY_DELAY = 2     # 相邻两次拉取之间的等待（秒）
 FETCH_TIMEOUT = 10        # 数据源拉取超时（秒）
 
-# —— P3 CF 内判定（OTC 引擎 Worker 真实 connect，探测点固定在 Cloudflare）——
-P3_BATCH_URL = 'https://check.proxyip.zzzzzz.hidns.vip/?ip={ips}'  # OTC 批量接口，逗号分隔；同一引擎也提供 /check?proxyip= 单节点版
-P3_BATCH = 25         # 单次请求的 IP 数：源码无数量限制，但单请求有约 60s 墙钟，超预算的探测被静默标成无效（实测 n>=50 开始丢，n=100 丢 44/100），25 可复现不丢
-P3_PARALLEL = 8       # 并发批量数（实测 8 已饱和：200 节点 26s，20 并发无增益）
-P3_TIMEOUT = 90       # 单次批量请求超时（秒）
-P3_FALLBACK_API = 'https://api.090227.xyz/check'  # 备用单节点接口（Cmliu），主接口整体不可用时逐个回落
-P3_FALLBACK_TIMEOUT = 30
+# —— A 入口能力（外部 TLS+SNI）——
+ENTRY_TIMEOUT = 8       # 单节点超时（秒）
+ENTRY_WORKERS = 100
+ENTRY_SNI = 'www.cloudflare.com'
+ENTRY_REQUEST = f'HEAD /cdn-cgi/trace HTTP/1.1\r\nHost: {ENTRY_SNI}\r\nConnection: close\r\n\r\n'.encode()
+TLS_CTX = ssl.create_default_context()
+TLS_CTX.check_hostname = False
+TLS_CTX.verify_mode = ssl.CERT_NONE
+
+# —— B 出口能力（OTC 引擎在 CF 内真实 connect）——
+CHECK_URL = 'https://api.ytb1.dns-dynamic.net/check?proxyip={addr}'  # 必须走 curl（urllib 403）
+CHECK_PARALLEL = 100   # 并发只调这里
+CHECK_TIMEOUT = 60
+FALLBACK_API = 'https://api.090227.xyz/check'  # 备用（Cmliu，独立引擎）
+FALLBACK_TIMEOUT = 30
+FALLBACK_PARALLEL = 16  # 备用上限（24 起丢）；信号量硬卡
+_CMLIU_SEM = threading.Semaphore(FALLBACK_PARALLEL)
 
 # —— 地区补全：ipinfo lite ——
 REGION_API = 'https://api.ipinfo.io/lite/{ip}?token=2cb674df499388'
@@ -121,8 +139,8 @@ REGION_TIMEOUT = 5         # 单次查询超时（秒）
 
 OUTPUT_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy.txt')
 ALL_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-All.txt')  # 历史采集总库：所有从源采集过的节点,累积去重
-INVALID_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-Invalid.txt')  # CF 内判定连续无效的节点：同一节点连续 DEAD_ROUNDS 轮无效才拉黑，未满轮数照常复测
-DEAD_ROUNDS = 3        # 连续几轮判定无效才拉黑（1 = 旧行为，抖动一次就永久出局）
+INVALID_FILE = os.path.join(_SCRIPT_DIR, 'Senflare-Proxy-Invalid.txt')  # 失败总表：累积所有判定无效的节点，只增（复活）不减（人工可删行）
+RESCUE_SAMPLE = 500      # 每轮从失败总表随机抽这么多复测，通过的救回主产物/分类，不过的继续留表
 PROGRESS_INTERVAL = 1     # 进度打印刷新间隔（秒）
 TEST_LIMIT = 0            # 试跑：每源只取前 N 个（0 = 全量）
 
@@ -152,8 +170,10 @@ def fmt(n):
 
 
 def node_addr(line):
-    """任意节点行(可带地区与标签)→ ip:port"""
-    return line.split(' [')[0].strip().rpartition('#')[0].strip()
+    """任意节点行(可带地区与标签)→ ip:port；无 # 时整行即地址"""
+    base = line.split(' [')[0].strip()
+    head, sep, _ = base.rpartition('#')
+    return (head if sep else base).strip()
 
 def fetch_text(url, timeout=FETCH_TIMEOUT):
     """拉取数据源文本"""
@@ -163,8 +183,7 @@ def fetch_text(url, timeout=FETCH_TIMEOUT):
 
 
 def load_nodes():
-    """拉取全部数据源 → 归一化 → 按 ip:port 去重 返回节点列表
-    两组源已合并为 SOURCES：判定改为 CF 内统一判定后，"免测/待测"不再影响任何行为"""
+    """拉取两组源 → 去重（待测跳过免测已有）→ (direct, test)；免测组直入主产物"""
     def fetch_group(sources, seen=None):
         seen = seen if seen is not None else set()
         nodes = []
@@ -199,14 +218,57 @@ def load_nodes():
             print(f'🌐 [{name}] 新增 {fmt(count)} 个节点')
         return nodes
 
-    nodes = fetch_group(SOURCES)
-    print(f'\n📊 去重后共 {fmt(len(nodes))} 个节点')
-    return nodes
+    direct_nodes = fetch_group(DIRECT_SOURCES)
+    test_nodes = fetch_group(TEST_SOURCES, seen={n.rpartition('#')[0] for n in direct_nodes})
+    print(f'\n📊 去重后共 {fmt(len(direct_nodes) + len(test_nodes))} 个节点'
+          f'（免测直入 {fmt(len(direct_nodes))} · 待判定 {fmt(len(test_nodes))}）')
+    return direct_nodes, test_nodes
 
 
 # ============================================================================
 # 三、CF 内判定（OTC 引擎 Worker 真实 connect，探测点固定在 Cloudflare）
 # ============================================================================
+
+def recv_all(sock):
+    """读到对端关闭或超时，返回完整响应"""
+    sock.settimeout(ENTRY_TIMEOUT)
+    data = b''
+    try:
+        while len(data) < 8192:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    except socket.timeout:
+        pass
+    return data
+
+
+def probe_entry(addr):
+    """A 入口能力：外部 TLS+SNI 拿到 cf-ray 即入口可用（结论只对当前探测网络成立）"""
+    host, _, port = addr.rpartition(':')
+    try:
+        with socket.create_connection((host.strip('[]'), int(port)), timeout=ENTRY_TIMEOUT) as s:
+            with TLS_CTX.wrap_socket(s, server_hostname=ENTRY_SNI) as t:
+                t.sendall(ENTRY_REQUEST)
+                return b'cf-ray' in recv_all(t).lower()
+    except Exception:
+        return False
+
+
+def probe_entry_all(addrs):
+    """并发探测全部节点的入口能力 返回 {addr: 可否作入口}"""
+    print(f'\n🚪 ── 入口能力探测 ── {fmt(len(addrs))} 个节点 · 外部 TLS+SNI · 并发 {ENTRY_WORKERS}')
+    out = {}
+    with ThreadPoolExecutor(ENTRY_WORKERS) as pool:
+        for i, (addr, ok) in enumerate(zip(addrs, pool.map(probe_entry, addrs)), 1):
+            out[addr] = ok
+            if i % 500 == 0 or i == len(addrs):
+                print(f'\r⏳ 入口探测 {fmt(i)}/{fmt(len(addrs))} · 可作入口 {fmt(sum(out.values()))}   ',
+                      end='', flush=True)
+    print(f'\n✅ 入口探测完成 · 可作入口 {fmt(sum(out.values()))} / {fmt(len(addrs))}')
+    return out
+
 
 def parse_ms(text):
     """OTC 返回的响应时间（'5ms' / '1.2s'）→ 毫秒；解析不了返回 0"""
@@ -221,58 +283,50 @@ def parse_ms(text):
     return 0.0
 
 
-def p3_probe_batch(batch):
-    """单次批量请求 → {addr: (有效, 延迟ms, 原因)}；返回条数可能少于请求数（墙钟截断），由调用方核对
-    必须走 curl 子进程：该接口挂在 CF 机器人防护后，urllib 一律 403"""
-    url = P3_BATCH_URL.format(ips=','.join(batch))
-    raw = subprocess.run(['curl', '-s', '--max-time', str(P3_TIMEOUT), url],
-                         capture_output=True).stdout
+def check_exit_one(addr):
+    """单个节点 CF 内判定 → (有效, 延迟ms, 原因)；OTC 失败即回落 Cmliu"""
     try:
-        data = json.loads(raw.decode('utf-8', 'ignore'))
-    except Exception:
-        return None
-    if not isinstance(data, list):
-        return None
-    return {d['目标']: (d.get('有效ProxyIP') is True, parse_ms(d.get('响应时间')),
-                        str(d.get('失败原因', '')))
-            for d in data if isinstance(d, dict) and d.get('目标')}
+        raw = subprocess.run(['curl', '-s', '--max-time', str(CHECK_TIMEOUT),
+                              CHECK_URL.format(addr=addr)], capture_output=True).stdout
+        d = json.loads(raw.decode('utf-8', 'ignore'))
+        if isinstance(d, dict):
+            if d.get('有效ProxyIP') is True:
+                return True, parse_ms(d.get('响应时间')), ''
+            reason = str(d.get('失败原因', '') or '主接口判无效')
+        else:
+            reason = '主接口无有效返回'
+    except Exception as e:
+        reason = f'主接口异常:{type(e).__name__}'
+    fb = check_fallback(addr)
+    return (fb[0], 0.0, fb[1]) if fb else (False, 0.0, reason or '主备均无结果')
 
 
-def p3_check(addrs):
-    """全量 CF 内判定：切 P3_BATCH 一批、并发 P3_PARALLEL 路；整批失败或被截断的逐个回落 Cmliu
-    返回 {addr: (有效, 延迟ms, 原因)}"""
-    batches = [addrs[i:i + P3_BATCH] for i in range(0, len(addrs), P3_BATCH)]
-    print(f'\n🧭 ── CF 内判定 ── {fmt(len(addrs))} 个节点 · OTC 批量 {P3_BATCH}/次 · '
-          f'并发 {P3_PARALLEL} · 共 {len(batches)} 批')
-    out, done, last = {}, 0, time.time()
-
-    def work(batch):
-        got = p3_probe_batch(batch)
-        if got is None or len(got) != len(batch):   # 整体失败或被约 60s 墙钟截断 → 不能信，逐个回落
-            fb = {a: p3_check_fallback(a) for a in batch}
-            return {a: (*(fb[a] or (False, '主接口与备用接口均无结果')), 0.0) for a in batch}
-        return {a: got.get(a, (False, 0.0, '批量接口漏返')) for a in batch}
-
-    with ThreadPoolExecutor(P3_PARALLEL) as pool:
-        for batch, res in zip(batches, pool.map(work, batches)):
-            out.update(res)
-            done += len(batch)
-            now = time.time()
-            if now - last >= PROGRESS_INTERVAL:
-                print(f'\r⏳ 判定进度 {fmt(done)}/{fmt(len(addrs))} · '
+def check_exit_all(addrs):
+    """全量 CF 内判定 → {addr: (有效, 延迟ms, 原因)}"""
+    print(f'\n🧭 ── CF 内判定 ── {fmt(len(addrs))} 个节点 · OTC 直连单节点 · 并发 {CHECK_PARALLEL}')
+    out = {}
+    with ThreadPoolExecutor(CHECK_PARALLEL) as pool:
+        for i, (addr, res) in enumerate(zip(addrs, pool.map(check_exit_one, addrs)), 1):
+            out[addr] = res
+            if i % 100 == 0 or i == len(addrs):
+                print(f'\r⏳ 判定进度 {fmt(i)}/{fmt(len(addrs))} · '
                       f'有效 {fmt(sum(1 for v in out.values() if v[0]))}   ', end='', flush=True)
-                last = now
     print(f'\n✅ 判定完成 · 有效 {fmt(sum(1 for v in out.values() if v[0]))} / {fmt(len(addrs))}')
     return out
 
 
-def p3_check_fallback(addr):
-    """备用单节点检测：Cmliu 接口 success 字段判有效 返回 (有效, 原因)，无法判定返回 None"""
+def check_fallback(addr):
+    """Cmliu 备用检测 → (有效, 原因) 或 None；并发由信号量硬卡 16"""
+    with _CMLIU_SEM:
+        return _fallback_locked(addr)
+
+
+def _fallback_locked(addr):
     try:
         qs = urlencode({'proxyip': addr})
-        req = urllib.request.Request(f'{P3_FALLBACK_API}?{qs}',
+        req = urllib.request.Request(f'{FALLBACK_API}?{qs}',
                                      headers={'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=P3_FALLBACK_TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=FALLBACK_TIMEOUT) as r:
             data = json.loads(r.read().decode('utf-8', 'ignore'))
         if isinstance(data, dict) and isinstance(data.get('success'), bool):
             reason = ''
@@ -405,33 +459,30 @@ def ensure_regions(nodes):
 # ============================================================================
 
 def load_dead_list(lines=None):
-    """筛出已拉黑的死单:同一节点连续 DEAD_ROUNDS 轮双探针全挂才入选,未满轮数本轮照常复测
-    lines 为 None 时读 Invalid 文件。write_class_files 每轮给每个死单只写一行,
-    故行数即连续无效轮数;节点某轮判定通过后不再写入,计数自然清零
-    """
+    """读失败总表 → {addr: line}，全部跳过（除每轮抽中的 500 个复活样本）"""
     if lines is None:
         lines = [l.strip() for l in open(INVALID_FILE, encoding='utf-8')] if os.path.exists(INVALID_FILE) else []
-    counter, latest = Counter(), {}
+    latest = {}
     for l in lines:
         if l:
-            addr = node_addr(l)
-            counter[addr] += 1
-            latest.setdefault(addr, l)
-    return {a: l for a, l in latest.items() if counter[a] >= DEAD_ROUNDS}
+            latest.setdefault(node_addr(l), l)
+    return latest
 
 
 def write_class_files(probed, dead):
-    """按 CF 内判定结果落盘分类文件；Invalid 每轮给已拉黑节点续写一行（维持连续无效轮数）
-    Bidirectional = 判定通过 = 该节点确实在转发到 Cloudflare，对所有用户一致可用
-    Invalid = 判定不通过 = CF 内连不通；连续 DEAD_ROUNDS 轮才拉黑，未满轮数下轮照常复测
-    返回 (本轮计数, Invalid 总行数)"""
-    groups = {t: [] for t in ('Bidirectional', 'Invalid')}
+    """A×B 四格落盘；Invalid = 旧总表 ∪ 本轮新失败 − 本轮复活（通过的抽样节点）"""
+    groups = {t: [] for t in ('Bidirectional', 'Forward', 'Reverse', 'Invalid')}
     cnt = Counter()
-    for node, ok, _lat, _reason in probed:
-        tag = 'Bidirectional' if ok else 'Invalid'
+    for node, a_ok, b_ok, _lat, _reason in probed:
+        tag = ('Bidirectional' if a_ok and b_ok else 'Forward' if a_ok
+               else 'Reverse' if b_ok else 'Invalid')
         cnt[tag] += 1
         groups[tag].append(node)
-    groups['Invalid'] += list(dead.values())   # 已拉黑节点续写，保住轮数不被清零
+    rescued = {node_addr(r[0]) for r in probed if r[1] or r[2]} & set(dead)
+    if rescued:
+        print(f'♻️ 复活 {fmt(len(rescued))} 个（抽样复测通过，从失败总表移除）')
+    tested = {node_addr(r[0]) for r in probed}
+    groups['Invalid'] += [l for a, l in dead.items() if a not in tested]
     for t, nodes in groups.items():            # 与主产物一致，按地区码升序
         nodes.sort(key=lambda l: (l.rpartition('#')[2], l))
         with open(os.path.join(_SCRIPT_DIR, f'Senflare-Proxy-{t}.txt'), 'w', encoding='utf-8') as f:
@@ -461,50 +512,71 @@ def main():
     if TEST_LIMIT > 0:
         print(f'\n🧪 试跑模式：每个源只取前 {fmt(TEST_LIMIT)} 个节点\n')
 
-    nodes = load_nodes()
+    direct_nodes, test_nodes = load_nodes()
 
     # 剔除 Cloudflare 官方网段（判定前清掉，省判定算力）
-    before = len(nodes)
-    nodes = [n for n in nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
-    if before - len(nodes):
-        print(f'🧹 Cloudflare 官方网段剔除 {fmt(before - len(nodes))} 个节点')
+    before = len(direct_nodes) + len(test_nodes)
+    direct_nodes = [n for n in direct_nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
+    test_nodes = [n for n in test_nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
+    if before - len(direct_nodes) - len(test_nodes):
+        print(f'🧹 Cloudflare 官方网段剔除 {fmt(before - len(direct_nodes) - len(test_nodes))} 个节点')
 
     if TEST_LIMIT > 0:
-        nodes = nodes[:TEST_LIMIT * len(SOURCES)]
+        direct_nodes = direct_nodes[:TEST_LIMIT * len(DIRECT_SOURCES)]
+        test_nodes = test_nodes[:TEST_LIMIT * len(TEST_SOURCES)]
 
-    # 历史采集总库:本轮采集到的节点全部累积
-    all_new, all_total = update_all_file(nodes)
+    # 历史采集总库:本轮采集到的节点（免测+待测）全部累积
+    all_new, all_total = update_all_file(direct_nodes + test_nodes)
 
-    # CF 内统一判定:探测点固定在 Cloudflare,结论对所有用户一致
-    dead = load_dead_list()          # 连续 DEAD_ROUNDS 轮判定无效的节点本轮整批跳过
-    todo = [n for n in nodes if node_addr(n) not in dead]
-    if len(nodes) - len(todo):
-        print(f'⏭️ 死单跳过 {fmt(len(nodes) - len(todo))} 个（连续 {DEAD_ROUNDS} 轮无效已拉黑）')
-    verdict = p3_check([node_addr(n) for n in todo])
-    probed = [(n, *verdict[node_addr(n)]) for n in todo]
+    # A×B 四格判定：A = 入口能力（本机网络视角）· B = 出口能力（CF 内，固定视角）
+    # 免测组跳过判定直入主产物；待测组 A∨B（任一位置可用）进主产物
+    # 失败总表全部跳过，但每轮随机抽 RESCUE_SAMPLE 个复测（通过即复活）
+    dead = load_dead_list()
+    rescue = random.sample(sorted(dead), min(RESCUE_SAMPLE, len(dead))) if dead else []
+    if rescue:
+        print(f'🎲 失败总表抽 {fmt(len(rescue))}/{fmt(len(dead))} 个复测')
+    rescue_lines = {a: dead[a] for a in rescue}
+    todo = [n for n in test_nodes if node_addr(n) not in dead] + list(rescue_lines.values())
+    skipped = len(test_nodes) - sum(1 for n in test_nodes if node_addr(n) not in dead)
+    if skipped:
+        print(f'⏭️ 死单跳过 {fmt(skipped)} 个（本轮未抽中，下轮再抽）')
+    addrs = [node_addr(n) for n in todo]
+    a_verdict = probe_entry_all(addrs)
+    b_verdict = check_exit_all(addrs)
+    probed = [(n, a_verdict[node_addr(n)], b_verdict[node_addr(n)][0],
+               b_verdict[node_addr(n)][1], b_verdict[node_addr(n)][2]) for n in todo]
     cnt, dead_total = write_class_files(probed, dead)
 
-    # 主产物门槛 = 判定通过,按 CF 内响应时间升序
-    passed = sorted((r for r in probed if r[1]), key=lambda r: r[2] or float('inf'))
-    final_nodes = ensure_regions([r[0] for r in passed])
+    # 主产物 = 免测组 + 待测组里 A∨B（正向+反向+双向）
+    tested = sorted((r[0] for r in probed if r[1] or r[2]),
+                    key=lambda n: b_verdict[node_addr(n)][1] or float('inf'))
+    final_nodes = ensure_regions(direct_nodes + tested)
     if not final_nodes:
-        print('❌ 没有任何判定通过的节点，退出')
+        print('❌ 没有任何可用节点，退出')
         sys.exit(1)
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         f.write('\n'.join(final_nodes) + '\n')
 
-    print(f'\n💾 已写入 {OUTPUT_FILE}：{fmt(len(final_nodes))} 个判定通过的节点')
-    print(f'🧭 分类:{dict(cnt)} · Invalid 在册 {fmt(dead_total)}（满 {DEAD_ROUNDS} 轮无效才拉黑）')
+    print(f'\n💾 已写入 {OUTPUT_FILE}：免测直入 {fmt(len(direct_nodes))} + '
+          f'待测可用 {fmt(len(tested))} = 合并 {fmt(len(final_nodes))} 个（正向+反向+双向+免测）')
+    print(f'🧭 四格分类:双向 {fmt(cnt["Bidirectional"])} · 正向(仅入口) {fmt(cnt["Forward"])} · '
+          f'反向(仅出口) {fmt(cnt["Reverse"])} · 无效 {fmt(cnt["Invalid"])} · '
+          f'Invalid 在册 {fmt(dead_total)}（失败总表，每轮抽 {RESCUE_SAMPLE} 复活）')
     print(f'📚 采集总库:本轮 {fmt(all_new)} · 累计 {fmt(all_total)} → {ALL_FILE}')
     print(f'\n🎉 全部完成 · 耗时 {time.time() - started:.0f} 秒')
 
 
 if __name__ == '__main__':
-    # 自检：未满 DEAD_ROUNDS 的节点不进死单（下轮照常复测），满轮数才拉黑
-    probe = ['1.1.1.1:443#US', '2.2.2.2:443#US']
-    assert not load_dead_list(probe * (DEAD_ROUNDS - 1)), '未满轮数不应拉黑'
-    assert len(load_dead_list(probe * DEAD_ROUNDS)) == 2, '满轮数应拉黑'
+    # 自检：失败总表读写（去重保留首行）
+    assert load_dead_list(['1.1.1.1:443#US', '1.1.1.1:443#US', '2.2.2.2:443#US']) == \
+        {'1.1.1.1:443': '1.1.1.1:443#US', '2.2.2.2:443': '2.2.2.2:443#US'}, '总表去重错'
     # 自检：响应时间解析
     assert (parse_ms('5ms'), parse_ms('1.2s'), parse_ms('x')) == (5.0, 1200.0, 0.0)
+    # 自检：A×B 四格映射（正向=只能当入口，反向=只能当出口）
+    cases = [('a:1#US', True, True), ('b:1#US', True, False),
+             ('c:1#US', False, True), ('d:1#US', False, False)]
+    tags = ['Bidirectional' if a and b else 'Forward' if a else 'Reverse' if b else 'Invalid'
+            for _, a, b in cases]
+    assert tags == ['Bidirectional', 'Forward', 'Reverse', 'Invalid'], f'四格映射错: {tags}'
     main()

@@ -10,9 +10,9 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 
 ```
 拉取多源（10 源） → 全局去重 → 剔除 Cloudflare 官方网段
-  └─ 全量节点 → 读死单记忆（连续 3 轮无效才跳过）→ CF 内统一判定
-        ├─ 判定通过：汇入主产物（按 CF 内响应时间升序）
-        └─ 判定不通过：记 Invalid，连续 3 轮才拉黑
+  └─ 全量节点 → 读失败总表（全部跳过，每轮随机抽 500 个复测）→ A×B 四格判定
+        ├─ 判定通过（A∨B）：汇入主产物
+        └─ 判定不通过：记 Invalid 总表（只增；通过复测即移除）
 主产物 → 地区补全 → Senflare-Proxy.txt
 ```
 
@@ -43,7 +43,7 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 分类产物（判定方案详见 [代理分类与测试.md](代理分类与测试.md)）：
 
 - `Senflare-Proxy-Bidirectional.txt`（判定通过）：OTC 引擎在 Cloudflare 内真实 connect 该节点并拿到 CF 边缘响应。探测点固定在 CF，所以结论对所有用户一致可复现 —— 入口与 Worker 出口是同一条透传链路，双向都能站
-- `Senflare-Proxy-Invalid.txt`（判定不通过）：每轮给每个无效节点记一行，行数即连续无效轮数；连续 3 轮才拉黑跳过判定，某轮通过后计数自然清零（删行也可人工降轮数）
+- `Senflare-Proxy-Invalid.txt`（失败总表）：所有判定无效的节点累积于此；每轮随机抽 500 个复测，通过的移除并救回分类/主产物（删行也可人工移除）
 - `Senflare-Proxy-All.txt`：历史采集总库——从各源采集过的节点全部累积（含判定未通过的），按 `ip:port` 去重、只增不减
 
 ## 💻 本地运行
