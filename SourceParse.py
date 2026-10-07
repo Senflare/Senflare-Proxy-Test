@@ -3,7 +3,6 @@
 """ 数据源解析模块 """
 
 import re
-import json
 
 REGION_RE = re.compile(r'[A-Z]{2,3}')
 IPV4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
@@ -52,7 +51,7 @@ def normalize_line(line):
 
 
 def parse_columns(text, ip_idx, port_idx, country_idx, skip_header):
-    """按列位解析 CSV → ip:port#Region；columns：(IP列, 端口列, 地区码列, 是否跳表头)"""
+    """按列位解析 CSV → ip:port#Region columns：(IP列, 端口列, 地区码列, 是否跳表头)"""
     out = []
     for raw in text.splitlines():
         line = raw.strip().lstrip(chr(65279))
@@ -75,37 +74,8 @@ def parse_columns(text, ip_idx, port_idx, country_idx, skip_header):
     return out
 
 
-def parse_json_mapping(text):
-    """分组 JSON（{"HK": [ip:port, ...]}）解析 → ip:port#HK；损坏返回空列表"""
-    out = []
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return out
-    if not isinstance(data, dict):
-        return out
-    for key, entries in data.items():
-        key = str(key).upper()
-        region = key if re.fullmatch(r'[A-Z]{2,3}', key) else ''
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            node = normalize_line(str(entry))
-            if not node:
-                continue
-            out.append(node if not node.endswith('#') else f'{node}{region}')
-    return out
-
-
 def parse_source(text, source):
-    """按源声明分发解析：columns → CSV，json → 分组 JSON，默认逐行；region 填充无标签节点"""
+    """按源声明分发解析：columns → CSV，默认逐行"""
     if 'columns' in source:
-        parsed = parse_columns(text, *source['columns'])
-    elif source.get('json'):
-        parsed = parse_json_mapping(text)
-    else:
-        parsed = [n for n in map(normalize_line, text.splitlines()) if n]
-    region = source.get('region', '')
-    if region:
-        parsed = [n if not n.endswith('#') else f'{n}{region}' for n in parsed]
-    return parsed
+        return parse_columns(text, *source['columns'])
+    return [n for n in map(normalize_line, text.splitlines()) if n]

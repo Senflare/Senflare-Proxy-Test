@@ -1,9 +1,9 @@
 name: Senflare Proxy Test
 
-# 定时跑优选测试：拉取多源 → TCP/HTTP 检测 → 地区补全 → 提交结果文件
+# 定时跑优选测试：拉取多源 → 三分类探测 → 地区补全 → 提交结果文件
 on:
   schedule:
-    - cron: '23 */1 * * *'    # 每小时一次（UTC，避开整点高峰）
+    - cron: '23 */3 * * *'    # 每 3 小时一次（UTC，避开整点高峰）
   workflow_dispatch:           # 支持手动触发
 
 permissions:
@@ -16,7 +16,7 @@ concurrency:                    # 上一次还没跑完时不叠加新任务
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: 📦 检出仓库
         uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 🔎 运行优选测试
+      - name: 🔎 运行优选测试(拉源 → 三分类探测 → 产物)
         run: python Start.py
 
       - name: 💾 提交结果/地区缓存
@@ -35,10 +35,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # 分开 add：任一文件本次未生成（如无节点需查地区时没有缓存文件）不影响另一个的提交
           git add Senflare-Proxy.txt || true
+          git add Senflare-Proxy-All.txt || true
           git add Senflare-Country.json || true
+          git add Senflare-Proxy-Bidirectional.txt Senflare-Proxy-Forward.txt Senflare-Proxy-Reverse.txt Senflare-Proxy-Invalid.txt || true
           if git diff --cached --quiet; then
             echo "✅ 结果无变化，跳过提交"
           else
-            git commit -m "🔄 数据更新 $(TZ=Asia/Shanghai date +%Y-%m-%d-%H:%M) [ Senflare ]"
+            git commit -m "🔄 数据更新 $(TZ=Asia/Shanghai date +%Y-%m-%d-%H:%M) [ Senflare Proxy]"
             git push
           fi
