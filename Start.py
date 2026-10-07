@@ -115,7 +115,7 @@ FETCH_TIMEOUT = 10        # 数据源拉取超时（秒）
 # —— A 入口能力（外部 TLS+SNI）——
 ENTRY_TIMEOUT = 5       # 单节点超时（秒）
 ENTRY_WORKERS = 200
-ENTRY_TRIES = 3         # 每节点最多试几次，任一次成功即通过
+ENTRY_TRIES = 1         # 每节点最多试几次，任一次成功即通过
 ENTRY_RETRY_DELAY = 1   # 重试间隔（秒）
 ENTRY_SNI = 'www.cloudflare.com'
 ENTRY_REQUEST = f'HEAD /cdn-cgi/trace HTTP/1.1\r\nHost: {ENTRY_SNI}\r\nConnection: close\r\n\r\n'.encode()
