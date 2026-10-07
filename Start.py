@@ -299,7 +299,7 @@ def run_probe_tests(nodes):
     """单遍 P1×P2 探测：P1 真 CF 验证（三采样）+ P2 入口透传 返回 [(node, p1_ok, avg, jitter, p2_ok)]"""
     total = len(nodes)
     done, last_print = 0, time.time()
-    results, p1_ok_n = [], 0
+    results, p1_ok_n, p2_ok_n = [], 0, 0
     print(f'\n🧭 ── 三分类探测 ── {fmt(total)} 个节点 · '
           f'P1 {P1_METHOD} /cdn-cgi/trace 采样 {max(3, P1_SAMPLES)} 次 · P2 TLS+SNI · 并发 {P1_WORKERS}')
 
@@ -317,13 +317,14 @@ def run_probe_tests(nodes):
             node, p1, avg, jitter, p2 = fut.result()
             results.append((node, p1, avg, jitter, p2))
             p1_ok_n += p1
+            p2_ok_n += p2
             done += 1
             now = time.time()
             if now - last_print >= PROGRESS_INTERVAL or done == total:
-                print(f'\r⏳ 探测进度 {fmt(done)}/{fmt(total)} · P1 通过 {fmt(p1_ok_n)}   ',
+                print(f'\r⏳ 探测进度 {fmt(done)}/{fmt(total)} · P1 通过 {fmt(p1_ok_n)} · P2 通过 {fmt(p2_ok_n)}   ',
                       end='', flush=True)
                 last_print = now
-    print(f'\n✅ 探测完成 · P1 通过 {fmt(p1_ok_n)} / {fmt(total)}')
+    print(f'\n✅ 探测完成 · P1 通过 {fmt(p1_ok_n)} / {fmt(total)} · P2 通过 {fmt(p2_ok_n)} / {fmt(total)}')
     return results
 
 
