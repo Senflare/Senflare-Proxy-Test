@@ -104,6 +104,11 @@ TEST_SOURCES = {
         'fallbackUrl': 'https://cdn.jsdelivr.net/gh/avotcorg/proxy@main/ProxyList1.txt',
         'columns': (0, 1, 2, False),
     },
+    # 项目作者：Mia
+    # 项目地址：https://countrymerge.pages.dev/all.txt
+    'Mia': {
+        'url': 'https://countrymerge.pages.dev/all.txt',
+    },
 }
 # 输出/缓存锚定到脚本所在目录
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
