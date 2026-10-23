@@ -16,7 +16,7 @@ concurrency:                    # 上一次还没跑完时不叠加新任务
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 120      # 全量约 3 万节点；A 入口 200 并发试 3 次，B 出口双接口 100 并发
+    timeout-minutes: 120      # 全量约 3 万节点；A 入口 200 并发，B 出口双接口 32 并发
     steps:
       - name: 📦 检出仓库
         uses: actions/checkout@v4

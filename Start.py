@@ -109,6 +109,70 @@ TEST_SOURCES = {
     'Mia': {
         'url': 'https://countrymerge.pages.dev/all.txt',
     },
+    # ==================== 订阅器嗅探源 ====================
+
+    # 项目作者：CMLiussss（Cmliu）
+    # 项目地址：https://github.com/cmliu
+    'CM': {
+        'url': 'sub://sub.cmliussss.net',
+    },
+    # 项目作者：Mia
+    'Mia订阅': {
+        'url': 'sub://sub.mia.xx.kg',
+    },
+    # 项目作者：Moist_R
+    'Moist_R': {
+        'url': 'sub://owo.o00o.ooo',
+    },
+    # 项目作者：洛璃
+    '洛璃': {
+        'url': 'sub://loli.sub.us.ci',
+    },
+    # 项目作者：Lzj（辣子鸡）
+    'Lzj订阅': {
+        'url': 'sub://sub.lzjbaby.com',
+    },
+    # 项目作者：辣椒炒肉少放辣
+    '辣椒炒肉少放辣': {
+        'url': 'sub://sub.xdu.qzz.io',
+    },
+    # 项目作者：S5公益
+    'S5公益': {
+        'url': 'sub://sub.995677.xyz',
+    },
+    # 项目作者：文烨
+    '文烨': {
+        'url': 'sub://sub.keaeye.icu',
+    },
+    # 项目作者：Kristi
+    'Kristi': {
+        'url': 'sub://sub.mot.cloudns.biz',
+    },
+    # 项目作者：Zrf（周润发）
+    '周润发': {
+        'url': 'sub://zrf.zrf.me',
+    },
+    # 项目作者：DanFeng
+    'DanFeng': {
+        'url': 'sub://sub.danfeng.eu.org',
+    },
+    # 项目作者：IDK
+    'IDK': {
+        'url': 'sub://sub.pjq.cc.cd',
+    },
+    # 项目作者：Eooce（老王）
+    # 项目地址：https://github.com/eooce
+    '老王': {
+        'url': 'sub://sub.eooce.xx.kg',
+    },
+    # 项目作者：青云志
+    '青云志': {
+        'url': 'sub://sub.ais.sld.tw',
+    },
+    # 项目作者：Xiagefei
+    'Xiagefei': {
+        'url': 'sub://hub.share.xx.kg',
+    },
 }
 # 输出/缓存锚定到脚本所在目录
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -116,6 +180,10 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FETCH_RETRIES = 5
 FETCH_RETRY_DELAY = 2     # 相邻两次拉取之间的等待（秒）
 FETCH_TIMEOUT = 10        # 数据源拉取超时（秒）
+
+# —— 订阅器嗅探：聚合订阅器需带 edgetunnel 订阅参数才返回节点池，占位参数即可（与 Mia 同类 Worker 一致）——
+SUB_SNIFF_QUERY = 'host=example.com&uuid=00000000-0000-4000-8000-000000000000'
+SUB_UA = 'v2rayN/edgetunnel (https://github.com/cmliu/edgetunnel)'
 
 # —— A 入口能力（外部 TLS+SNI）——
 ENTRY_TIMEOUT = 5       # 单节点超时（秒）
@@ -128,12 +196,18 @@ TLS_CTX = ssl.create_default_context()
 TLS_CTX.check_hostname = False
 TLS_CTX.verify_mode = ssl.CERT_NONE
 
-# —— B 出口能力（OTC 引擎在 CF 内真实 connect）——
-CHECK_URL = 'https://api.ytb1.dns-dynamic.net/check?proxyip={addr}'  # 必须走 curl（urllib 403）
-CHECK_PARALLEL = 100   # 并发只调这里
-CHECK_TIMEOUT = 60
-FALLBACK_API = 'https://api.090227.xyz/check'  # 备用（Cmliu，独立引擎）
+# —— B 出口能力（CF 内真实 connect；接口作者：OTC、Cmliu）——
+CHECK_URL = ('https://avotc.zzzzzz.hidns.vip/check?proxyip={addr}'
+             '&timeoutMs=10000&readLimit=65536')  # 作者 OTC
+CHECK_PARALLEL = 32    # 并发只调这里，免费接口压太高容易限流
+CHECK_TIMEOUT = 30     # curl 总超时，需大于接口内部 timeoutMs
+EXIT_RETRIES = 2       # 接口异常/远端失败时最多试几次，明确无效不重试
+EXIT_RETRY_DELAY = 1   # 重试间隔（秒）
+FALLBACK_API = 'https://api.090227.xyz/check'  # 作者 Cmliu（独立引擎）
 FALLBACK_TIMEOUT = 30
+# 接口级故障（不是目标节点无效），按未判定处理，不新增失败记录
+UNKNOWN_EXIT_REASONS = ('远端返回失败结果',)
+EXIT_POOL = ThreadPoolExecutor(CHECK_PARALLEL * 2)  # 双接口共享池，提前返回不堆积线程
 
 # —— 地区补全：ipinfo lite ——
 REGION_API = 'https://api.ipinfo.io/lite/{ip}?token=2cb674df499388'
@@ -153,12 +227,24 @@ TEST_LIMIT = 0            # 试跑：每源只取前 N 个（0 = 全量）
 # 二、拉取与解析（格式解析函数在 SourceParse.py 模块）
 # ============================================================================
 
-# Cloudflare 官方网段
+# Cloudflare 官方网段：内置快照兜底，每轮启动时在线拉取官方列表刷新（拉取失败沿用快照）
+CF_LIST_URLS = {4: 'https://www.cloudflare.com/ips-v4/', 6: 'https://www.cloudflare.com/ips-v6/'}
 CF_NETWORKS = [ipaddress.ip_network(n) for n in (
-    '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', 
+    '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
     '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13', '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
     '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32', '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
 )]
+
+def refresh_cf_networks():
+    """在线拉取 CF 官方 IP 段刷新剔除表，v4/v6 家族独立替换，失败家族沿用内置快照"""
+    for family, url in CF_LIST_URLS.items():
+        try:
+            nets = [ipaddress.ip_network(l.strip()) for l in fetch_text(url).splitlines() if l.strip()]
+            if nets:
+                CF_NETWORKS[:] = [n for n in CF_NETWORKS if n.version != family] + nets
+                print(f'🌐 CF 官方 v{family} 网段在线更新：{len(nets)} 段')
+        except Exception as e:
+            print(f'⚠️  CF 官方 v{family} 网段拉取失败，沿用内置快照：{type(e).__name__}')
 
 def is_cf_ip(host):
     """主机是否在 Cloudflare 官方网段内"""
@@ -179,11 +265,23 @@ def node_addr(line):
     head, sep, _ = base.rpartition('#')
     return (head if sep else base).strip()
 
-def fetch_text(url, timeout=FETCH_TIMEOUT):
+def fetch_text(url, timeout=FETCH_TIMEOUT, headers=None):
     """拉取数据源文本"""
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    req = urllib.request.Request(url, headers=headers or {'User-Agent': 'Mozilla/5.0'})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode('utf-8', 'ignore')
+
+
+def subscription_url(url):
+    """订阅器源写法规范化 → (请求URL, 是否订阅器)
+    sub:// 前缀或裸域名 → https，丢弃 #标签 后缀，无路径时自动补嗅探参数；完整 http(s) URL 原样"""
+    url = url.split('#', 1)[0].strip()
+    if url.startswith(('http://', 'https://')):
+        return url, False
+    real = 'https://' + (url[len('sub://'):] if url.startswith('sub://') else url)
+    if '/' not in real[8:] and '?' not in real:
+        real += '/sub?' + SUB_SNIFF_QUERY
+    return real, True
 
 
 def load_nodes():
@@ -193,12 +291,17 @@ def load_nodes():
         nodes = []
         for name, source in sources.items():
             text = None
+            is_sub = False
             urls = [u for u in (source.get('url'), source.get('fallbackUrl')) if u]
             for url in urls:
+                req_url, is_sub = subscription_url(url)
                 for attempt in range(1, FETCH_RETRIES + 1):
                     try:
-                        text = fetch_text(url)
-                        break
+                        text = fetch_text(req_url, headers={'User-Agent': SUB_UA} if is_sub else None)
+                        if text.strip():
+                            break
+                        text = None
+                        raise ValueError('空响应')
                     except Exception as e:
                         if attempt < FETCH_RETRIES:
                             print(f'⚠️  [{name}] 第 {attempt} 次拉取失败：{e}，{FETCH_RETRY_DELAY}s 后重试...')
@@ -210,8 +313,8 @@ def load_nodes():
                 continue
 
             count = 0
-            # 格式解析走 SourceParse 模块
-            parsed = parse_source(text, source)
+            # 格式解析走 SourceParse 模块（订阅器内容为 base64 链接列表，按 sub 分发）
+            parsed = parse_source(text, {**source, 'sub': True} if is_sub else source)
             for node in parsed:
                 key = node.rpartition('#')[0]
                 if key in seen:
@@ -230,7 +333,7 @@ def load_nodes():
 
 
 # ============================================================================
-# 三、出口能力探测（OTC 引擎在 CF 内真实 connect）
+# 三、出口能力探测（OTC / Cmliu 引擎在 CF 内真实 connect）
 # ============================================================================
 
 def recv_all(sock):
@@ -294,67 +397,94 @@ def parse_ms(text):
 
 
 def check_exit_one(addr):
-    """单个节点出口能力 → (有效, 延迟ms, 原因)；OTC 与 Cmliu 同时查，任一判有效即通过
-    并发比串行回退快约一半：OTC 超时不再阻塞 Cmliu，且两者都判无效才输出无效"""
-    with ThreadPoolExecutor(2) as pool:
-        otc_f, cmliu_f = pool.submit(_check_otc, addr), pool.submit(check_fallback, addr)
-        otc_res, cmliu_res = otc_f.result(), cmliu_f.result()
-
-    if otc_res[0]:
-        return True, otc_res[1], ''
-    if cmliu_res and cmliu_res[0]:
-        return True, 0.0, ''
-    reason = otc_res[2] or (cmliu_res[1] if cmliu_res else '主备均无结果')
-    return False, 0.0, reason
+    """单个节点出口能力 → (True/False/None, 延迟ms, 原因)；None = 探测失败，不据此判无效
+    OTC 与 Cmliu 同时查，任一判有效立即返回；两者都明确无效才判无效"""
+    futures = {EXIT_POOL.submit(_check_otc, addr): 'otc',
+               EXIT_POOL.submit(check_fallback, addr): 'cmliu'}
+    results = {}
+    for fut in as_completed(futures):
+        name = futures[fut]
+        results[name] = fut.result()
+        if results[name][0] is True:      # 有效立即返回，不等另一接口
+            return True, results[name][1] if name == 'otc' else 0.0, ''
+    otc_res, cmliu_res = results['otc'], results['cmliu']
+    if otc_res[0] is False:
+        return False, 0.0, otc_res[2]
+    if cmliu_res[0] is False:
+        return False, 0.0, cmliu_res[1]
+    return None, 0.0, otc_res[2] or cmliu_res[1] or 'OTC/Cmliu 均无结果'
 
 
 def _check_otc(addr):
-    """OTC 单节点 → (有效, 延迟ms, 原因)"""
-    try:
-        raw = subprocess.run(['curl', '-s', '--max-time', str(CHECK_TIMEOUT),
-                              CHECK_URL.format(addr=addr)], capture_output=True).stdout
-        d = json.loads(raw.decode('utf-8', 'ignore'))
-        if isinstance(d, dict):
-            if d.get('有效ProxyIP') is True:
-                return True, parse_ms(d.get('响应时间')), ''
-            return False, 0.0, str(d.get('失败原因', '') or '主接口判无效')
-        return False, 0.0, '主接口无有效返回'
-    except Exception as e:
-        return False, 0.0, f'主接口异常:{type(e).__name__}'
+    """OTC 接口单节点 → (True/False/None, 延迟ms, 原因)；接口异常/远端失败返回 None"""
+    reason = 'OTC 接口无有效返回'
+    for attempt in range(1, EXIT_RETRIES + 1):
+        try:
+            raw = subprocess.run(['curl', '-s', '--max-time', str(CHECK_TIMEOUT),
+                                  CHECK_URL.format(addr=addr)], capture_output=True).stdout
+            d = json.loads(raw.decode('utf-8', 'ignore'))
+            if isinstance(d, dict):
+                if d.get('有效ProxyIP') is True:
+                    return True, parse_ms(d.get('响应时间')), ''
+                reason = str(d.get('失败原因', '') or 'OTC 接口判无效').strip()
+                if reason in UNKNOWN_EXIT_REASONS:
+                    if attempt < EXIT_RETRIES:
+                        time.sleep(EXIT_RETRY_DELAY)
+                        continue
+                    return None, 0.0, reason
+                return False, 0.0, reason
+        except Exception as e:
+            reason = f'OTC 接口异常:{type(e).__name__}'
+        if attempt < EXIT_RETRIES:
+            time.sleep(EXIT_RETRY_DELAY)
+    return None, 0.0, reason
 
 
 def check_exit_all(addrs):
-    """全量出口能力探测 → {addr: (有效, 延迟ms, 原因)}"""
-    print(f'\n🧭 ── 出口能力探测 ── {fmt(len(addrs))} 个节点 · OTC 直连单节点 · 并发 {CHECK_PARALLEL}')
+    """全量出口能力探测 → {addr: (True/False/None, 延迟ms, 原因)}"""
+    print(f'\n🧭 ── 出口能力探测 ── {fmt(len(addrs))} 个节点 · OTC/Cmliu 双接口 · 并发 {CHECK_PARALLEL}')
     out = {}
     with ThreadPoolExecutor(CHECK_PARALLEL) as pool:
         for i, (addr, res) in enumerate(zip(addrs, pool.map(check_exit_one, addrs)), 1):
             out[addr] = res
             if i % CHECK_PARALLEL == 0 or i == len(addrs):
-                print(f'\r⏳ 出口探测 {fmt(i)}/{fmt(len(addrs))} · '
-                      f'有效 {fmt(sum(1 for v in out.values() if v[0]))}   ', end='', flush=True)
-    print(f'\n✅ 出口探测完成 · 有效 {fmt(sum(1 for v in out.values() if v[0]))} / {fmt(len(addrs))}')
+                valid = sum(1 for v in out.values() if v[0] is True)
+                unknown = sum(1 for v in out.values() if v[0] is None)
+                print(f'\r⏳ 出口探测 {fmt(i)}/{fmt(len(addrs))} · 有效 {fmt(valid)} · 未判定 {fmt(unknown)}   ',
+                      end='', flush=True)
+    valid = sum(1 for v in out.values() if v[0] is True)
+    invalid = sum(1 for v in out.values() if v[0] is False)
+    unknown = sum(1 for v in out.values() if v[0] is None)
+    print(f'\n✅ 出口探测完成 · 有效 {fmt(valid)} · 无效 {fmt(invalid)} · 未判定 {fmt(unknown)} / {fmt(len(addrs))}')
     return out
 
 
 def check_fallback(addr):
-    """Cmliu 备用检测 → (有效, 原因) 或 None"""
-    try:
-        qs = urlencode({'proxyip': addr})
-        req = urllib.request.Request(f'{FALLBACK_API}?{qs}',
-                                     headers={'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=FALLBACK_TIMEOUT) as r:
-            data = json.loads(r.read().decode('utf-8', 'ignore'))
-        if isinstance(data, dict) and isinstance(data.get('success'), bool):
-            reason = ''
-            if not data['success']:
-                probes = data.get('probe_results') or {}
-                probe = probes.get('ipv4') or probes.get('ipv6') or {}
-                reason = str(probe.get('error', '') or '备用接口未通过')
-            return data['success'], reason
-    except Exception:
-        pass
-    return None
+    """Cmliu 接口备用检测 → (True/False/None, 原因)；None = 接口不可用，不判无效"""
+    reason = 'Cmliu 接口无有效返回'
+    for attempt in range(1, EXIT_RETRIES + 1):
+        try:
+            qs = urlencode({'proxyip': addr})
+            req = urllib.request.Request(f'{FALLBACK_API}?{qs}',
+                                         headers={'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=FALLBACK_TIMEOUT) as r:
+                data = json.loads(r.read().decode('utf-8', 'ignore'))
+            if isinstance(data, dict) and isinstance(data.get('success'), bool):
+                reason = ''
+                if not data['success']:
+                    probes = data.get('probe_results') or {}
+                    probe = probes.get('ipv4') or probes.get('ipv6') or {}
+                    reason = str(probe.get('error', '') or 'Cmliu 接口未通过').strip()
+                return data['success'], reason
+        except urllib.error.HTTPError as e:
+            reason = f'Cmliu 接口 HTTP {e.code}'
+            if 400 <= e.code < 500:      # 4xx 重试无意义（403 是服务端配置问题）
+                return None, reason
+        except Exception as e:
+            reason = f'Cmliu 接口异常:{type(e).__name__}'
+        if attempt < EXIT_RETRIES:
+            time.sleep(EXIT_RETRY_DELAY)
+    return None, reason
 
 
 # ============================================================================
@@ -409,7 +539,7 @@ def query_ipinfo(ip):
 
 
 def ensure_regions(nodes):
-    """地区补全：带地区码的跳过，缺的查缓存 → 接口 补不到的剔除，限流的保留待下轮"""
+    """地区补全：带地区码的跳过，缺的查缓存 → 接口 补不到的保留（地区留空），限流的保留待下轮"""
     cache = load_region_cache()
     result = list(nodes)
     pending_idx = []
@@ -455,8 +585,7 @@ def ensure_regions(nodes):
                     result[i] = f'{base}#{code}'
                     cache[host] = code
                 else:
-                    failed += 1
-                    result[i] = None    # 补不到地区的剔除
+                    failed += 1          # 补不到：保留节点，地区留空，下轮再试
                 now = time.time()
                 if done % REGION_WORKERS == 0 or done == total:
                     print(f'\r⏳ 地区查询 进度 {fmt(done)}/{fmt(total)} · 成功 {fmt(queried_ok)}   ',
@@ -466,7 +595,7 @@ def ensure_regions(nodes):
         save_region_cache(cache)
     kept = [n for n in result if n]
     print(f'\n✅ 地区补全完成 · 缓存命中 {fmt(hits)} · 接口成功 {fmt(queried_ok)} · '
-          f'失败剔除 {fmt(failed)} · 限流保留 {fmt(limited)} · 缓存存量 {fmt(len(cache))}')
+          f'失败保留 {fmt(failed)} · 限流保留 {fmt(limited)} · 缓存存量 {fmt(len(cache))}')
     return kept
 
 
@@ -485,25 +614,42 @@ def load_dead_list(lines=None):
     return latest
 
 
+def classify(a_ok, b_ok):
+    """A×B 四格分类；B 未判定返回 None（不写四格、不新增失败记录）"""
+    if b_ok is None:
+        return None
+    return ('Bidirectional' if a_ok and b_ok else 'Forward' if a_ok
+            else 'Reverse' if b_ok else 'Invalid')
+
+
 def write_class_files(probed, dead):
-    """A×B 四格落盘；Invalid = 旧总表 ∪ 本轮新失败 − 本轮复活（通过的抽样节点）"""
+    """A×B 四格落盘；B 未判定不进四格、不新增失败记录
+    Invalid = 旧总表 ∪ 本轮明确失败 − 本轮复活（已判定非无效）"""
     groups = {t: [] for t in ('Bidirectional', 'Forward', 'Reverse', 'Invalid')}
     cnt = Counter()
+    unknown = 0
+    resolved = set()          # 本轮明确判为非无效的节点
     for node, a_ok, b_ok, _lat, _reason in probed:
-        tag = ('Bidirectional' if a_ok and b_ok else 'Forward' if a_ok
-               else 'Reverse' if b_ok else 'Invalid')
+        tag = classify(a_ok, b_ok)
+        if tag is None:
+            unknown += 1
+            if a_ok:                  # A 已通，至少不是无效；B 未判定暂不进四格
+                resolved.add(node_addr(node))
+            continue
         cnt[tag] += 1
         groups[tag].append(node)
-    rescued = {node_addr(r[0]) for r in probed if r[1] or r[2]} & set(dead)
+        if tag != 'Invalid':
+            resolved.add(node_addr(node))
+    rescued = resolved & set(dead)
     if rescued:
-        print(f'♻️ 复活 {fmt(len(rescued))} 个（抽样复测通过，从失败总表移除）')
-    tested = {node_addr(r[0]) for r in probed}
-    groups['Invalid'] += [l for a, l in dead.items() if a not in tested]
+        print(f'♻️ 复活 {fmt(len(rescued))} 个（复测改判，从失败总表移除）')
+    new_invalid = {node_addr(n) for n in groups['Invalid']}
+    groups['Invalid'] += [l for a, l in dead.items() if a not in resolved and a not in new_invalid]
     for t, nodes in groups.items():            # 与主产物一致，按地区码升序
         nodes.sort(key=lambda l: (l.rpartition('#')[2], l))
         with open(os.path.join(_SCRIPT_DIR, f'Senflare-Proxy-{t}.txt'), 'w', encoding='utf-8') as f:
             f.write('\n'.join(nodes) + '\n' if nodes else '')
-    return cnt, len(groups['Invalid'])
+    return cnt, len(groups['Invalid']), unknown
 
 
 def update_all_file(nodes):
@@ -525,6 +671,7 @@ def update_all_file(nodes):
 def main():
     started = time.time()
     print('🚀 Senflare Proxy Test 启动')
+    refresh_cf_networks()
     if TEST_LIMIT > 0:
         print(f'\n🧪 试跑模式：每个源只取前 {fmt(TEST_LIMIT)} 个节点\n')
 
@@ -545,7 +692,8 @@ def main():
     all_new, all_total = update_all_file(direct_nodes + test_nodes)
 
     # A×B 四格判定：A = 入口能力（本机网络视角）· B = 出口能力（CF 内，固定视角）
-    # 免测组跳过判定直入主产物；待测组 A∨B（任一位置可用）进主产物
+    # 免测组跳过判定直入主产物；待测组只把 B 通过（反向/双向）的节点并入主产物
+    # B 探测失败（接口异常/超时）按未判定处理，不新增失败记录
     # 失败总表全部跳过，但每轮随机抽 RESCUE_SAMPLE 个复测（通过即复活）
     dead = load_dead_list()
     rescue = random.sample(sorted(dead), min(RESCUE_SAMPLE, len(dead))) if dead else []
@@ -561,10 +709,10 @@ def main():
     b_verdict = check_exit_all(addrs)
     probed = [(n, a_verdict[node_addr(n)], b_verdict[node_addr(n)][0],
                b_verdict[node_addr(n)][1], b_verdict[node_addr(n)][2]) for n in todo]
-    cnt, dead_total = write_class_files(probed, dead)
+    cnt, dead_total, unknown = write_class_files(probed, dead)
 
-    # 主产物 = 免测组 + 待测组里 A∨B（正向+反向+双向）
-    tested = sorted((r[0] for r in probed if r[1] or r[2]),
+    # 主产物 = 免测组 + 待测组 B 通过（反向+双向）；A-only 只进 Forward
+    tested = sorted((r[0] for r in probed if r[2] is True),
                     key=lambda n: b_verdict[node_addr(n)][1] or float('inf'))
     final_nodes = ensure_regions(direct_nodes + tested)
     if not final_nodes:
@@ -575,24 +723,31 @@ def main():
         f.write('\n'.join(final_nodes) + '\n')
 
     print(f'\n💾 已写入 {OUTPUT_FILE}：免测直入 {fmt(len(direct_nodes))} + '
-          f'待测可用 {fmt(len(tested))} = 合并 {fmt(len(final_nodes))} 个（正向+反向+双向+免测）')
+          f'待测可用 {fmt(len(tested))} = 合并 {fmt(len(final_nodes))} 个（反向+双向+免测）')
     print(f'🧭 四格分类:双向 {fmt(cnt["Bidirectional"])} · 正向(仅入口) {fmt(cnt["Forward"])} · '
           f'反向(仅出口) {fmt(cnt["Reverse"])} · 无效 {fmt(cnt["Invalid"])} · '
-          f'Invalid 在册 {fmt(dead_total)}（失败总表，每轮抽 {RESCUE_SAMPLE} 复活）')
+          f'未判定 {fmt(unknown)} · Invalid 在册 {fmt(dead_total)}（失败总表，每轮抽 {RESCUE_SAMPLE} 复活）')
+    if unknown:
+        print(f'⚠️ 未判定 {fmt(unknown)} 个：B 接口异常/超时，不新增失败记录，下轮重测')
     print(f'📚 采集总库:本轮 {fmt(all_new)} · 累计 {fmt(all_total)} → {ALL_FILE}')
     print(f'\n🎉 全部完成 · 耗时 {time.time() - started:.0f} 秒')
 
 
 if __name__ == '__main__':
+    # 自检：订阅器写法规范化（#标签丢弃 / 裸域名补嗅探参数 / 完整 URL 原样）
+    assert subscription_url('sub://owo.o00o.ooo#Moist_R') == (
+        f'https://owo.o00o.ooo/sub?{SUB_SNIFF_QUERY}', True), 'sub://#标签 规范化错'
+    assert subscription_url('owo.o00o.ooo') == (f'https://owo.o00o.ooo/sub?{SUB_SNIFF_QUERY}', True), '裸域名错'
+    assert subscription_url('https://countrymerge.pages.dev/all.txt') == ('https://countrymerge.pages.dev/all.txt', False), '完整URL错'
     # 自检：失败总表读写（去重保留首行）
     assert load_dead_list(['1.1.1.1:443#US', '1.1.1.1:443#US', '2.2.2.2:443#US']) == \
         {'1.1.1.1:443': '1.1.1.1:443#US', '2.2.2.2:443': '2.2.2.2:443#US'}, '总表去重错'
     # 自检：响应时间解析
     assert (parse_ms('5ms'), parse_ms('1.2s'), parse_ms('x')) == (5.0, 1200.0, 0.0)
-    # 自检：A×B 四格映射（正向=只能当入口，反向=只能当出口）
+    # 自检：A×B 四格映射（正向=只能当入口，反向=只能当出口）；B 未判定不进四格
     cases = [('a:1#US', True, True), ('b:1#US', True, False),
              ('c:1#US', False, True), ('d:1#US', False, False)]
-    tags = ['Bidirectional' if a and b else 'Forward' if a else 'Reverse' if b else 'Invalid'
-            for _, a, b in cases]
+    tags = [classify(a, b) for _, a, b in cases]
     assert tags == ['Bidirectional', 'Forward', 'Reverse', 'Invalid'], f'四格映射错: {tags}'
+    assert classify(True, None) is None and classify(False, None) is None, 'B 未判定错'
     main()
