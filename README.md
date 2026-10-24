@@ -9,7 +9,7 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 ## ✨ 工作流程
 
 ```
-拉取多源（26 源） → 全局去重 → 剔除 Cloudflare 官方网段
+拉取多源（32 源） → 全局去重 → 剔除 Cloudflare 官方网段
   └─ 全量节点 → 读失败总表（全部跳过，每轮随机抽 500 个复测）→ A×B 四格判定
         ├─ B 通过（反向/双向）：汇入主产物
         ├─ 仅 A 通过（正向）：只进 Forward，不进主产物
@@ -27,9 +27,9 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 
 ## 📡 数据来源
 
-[Xiaobei09](https://github.com/Xiaobei09) · [Cmliu](https://github.com/cmliu) · [Wentao883](https://github.com/wentao883) · [ChatBotPlus](https://github.com/ChatBotPlus) · [Ymyuuu](https://github.com/ymyuuu) · [Mountain787](https://github.com/mountain787) · [Fangsia Karlina](https://github.com/papapapapdelesia) · [Xgonce](https://github.com/xgonce) · [Lzj](https://github.com/wanwushequ/cfyxip) · [wan828963-code](https://github.com/wan828963-code/best-cf-ips) · [alphaxzj](https://github.com/alphaxzj/bestcf) · [rxsweet](https://github.com/rxsweet/cfip) · [liyan1972](https://github.com/liyan1972/proxyip-fetcher) · [NiREvil/vless](https://github.com/NiREvil/vless) · [avotcorg](https://github.com/avotcorg/proxy) · [Mia](https://countrymerge.pages.dev/all.txt) · [eooce/老王](https://github.com/eooce)
+[Xiaobei09](https://github.com/Xiaobei09) · [Cmliu](https://github.com/cmliu) · [Wentao883](https://github.com/wentao883) · [ChatBotPlus](https://github.com/ChatBotPlus) · [Ymyuuu](https://github.com/ymyuuu) · [Mountain787](https://github.com/mountain787) · [Fangsia Karlina](https://github.com/papapapapdelesia) · [Xgonce](https://github.com/xgonce) · [Lzj](https://github.com/wanwushequ/cfyxip) · [wan828963-code](https://github.com/wan828963-code/best-cf-ips) · [alphaxzj](https://github.com/alphaxzj/bestcf) · [rxsweet](https://github.com/rxsweet/cfip) · [liyan1972](https://github.com/liyan1972/proxyip-fetcher) · [NiREvil/vless](https://github.com/NiREvil/vless) · [avotcorg](https://github.com/avotcorg/proxy) · [Mia](https://countrymerge.pages.dev/all.txt) · [eooce/老王](https://github.com/eooce) · [Pawdroid](https://github.com/Pawdroid/Free-servers)
 
-订阅器嗅探（15 个，DNS 可解析即接入，部分仅放行海外网络）：`sub.cmliussss.net` · `sub.mia.xx.kg` · `owo.o00o.ooo` · `loli.sub.us.ci` · `sub.lzjbaby.com` · `sub.xdu.qzz.io` · `sub.995677.xyz` · `sub.keaeye.icu` · `sub.mot.cloudns.biz` · `zrf.zrf.me` · `sub.danfeng.eu.org` · `sub.pjq.cc.cd` · `sub.eooce.xx.kg` · `sub.ais.sld.tw` · `hub.share.xx.kg`
+订阅器嗅探（18 个，DNS 可解析即接入，部分仅放行海外网络）：`sub.cmliussss.net` · `sub.mia.xx.kg` · `owo.o00o.ooo` · `loli.sub.us.ci` · `sub.lzjbaby.com` · `sub.xdu.qzz.io` · `sub.995677.xyz` · `sub.keaeye.icu` · `sub.mot.cloudns.biz` · `zrf.zrf.me` · `sub.danfeng.eu.org` · `sub.pjq.cc.cd` · `sub.eooce.xx.kg` · `sub.ais.sld.tw` · `hub.share.xx.kg` · `cm.soso.edu.kg` · `vip.pjq.cc.cd` · `cmin2.cc.cd`
 
 ## 📤 输出格式
 
