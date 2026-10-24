@@ -120,7 +120,7 @@ TEST_SOURCES = {
     'Mia订阅': {
         'url': 'sub://sub.mia.xx.kg',
     },
-    # 项目作者：Kristi（Moist_R）
+    # 项目作者：Moist_R
     'Moist_R': {
         'url': 'sub://owo.o00o.ooo',
     },
@@ -140,7 +140,7 @@ TEST_SOURCES = {
     'S5公益': {
         'url': 'sub://sub.995677.xyz',
     },
-    # 项目作者：Kristi（文烨）
+    # 项目作者：文烨
     '文烨': {
         'url': 'sub://sub.keaeye.icu',
     },
@@ -156,9 +156,17 @@ TEST_SOURCES = {
     'DanFeng': {
         'url': 'sub://sub.danfeng.eu.org',
     },
+    # 项目作者：DanFeng
+    'DanFeng直链': {
+        'url': 'sub://m9ecgg0hnhh6.chinat.eu.org/sub?uuid=26524cce-d514-4014-a426-365fb266a14d&host=j98p.stage.danfengno1.kdns.fr&path=%2Fdanfeng-rc1tsu-f4tkma-5wjl-243qcd0s%3Fed%3D2560&ech=1&proxyip=true',
+    },
     # 项目作者：IDK
     'IDK': {
         'url': 'sub://sub.pjq.cc.cd',
+    },
+    # 项目作者：IDK
+    'IDK-VIP': {
+        'url': 'sub://vip.pjq.cc.cd',
     },
     # 项目作者：Eooce（老王）
     # 项目地址：https://github.com/eooce
@@ -173,32 +181,15 @@ TEST_SOURCES = {
     'Xiagefei': {
         'url': 'sub://hub.share.xx.kg',
     },
-    # 项目作者：DanFeng
-    'DanFeng直链': {
-        'url': 'sub://m9ecgg0hnhh6.chinat.eu.org/sub?uuid=26524cce-d514-4014-a426-365fb266a14d&host=j98p.stage.danfengno1.kdns.fr&path=%2Fdanfeng-rc1tsu-f4tkma-5wjl-243qcd0s%3Fed%3D2560&ech=1&proxyip=true',
+    # 项目作者：Cmin2
+    'Cmin2': {
+        'url': 'sub://cmin2.cc.cd',
     },
     # 项目作者：Pawdroid
     # 项目地址：https://github.com/Pawdroid/Free-servers
     'Pawdroid': {
         'url': 'https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub',
         'sub': True,  # https 订阅内容,显式声明走订阅解析
-    },
-    # 项目作者：CMLiussss（Cmliu）
-    # 项目地址：https://github.com/cmliu/WorkerVless2sub
-    'WorkerVless2sub': {
-        'url': 'https://raw.githubusercontent.com/cmliu/WorkerVless2sub/main/addressesapi.txt',
-    },
-    # 项目作者：IDK
-    'IDK-VIP': {
-        'url': 'sub://vip.pjq.cc.cd',
-    },
-    # 项目作者：Cmin2
-    'Cmin2': {
-        'url': 'sub://cmin2.cc.cd',
-    },
-    # 项目作者：天诚
-    '天诚': {
-        'url': 'sub://cm.soso.edu.kg',
     },
 }
 # 输出/缓存锚定到脚本所在目录
