@@ -21,7 +21,7 @@ Senflare Proxy Test —— Cloudflare ProxyIP 聚合 / 测试脚本 —— 多�
 | 层 | 说明 |
 |---|---|
 | CF 内统一判定 | OTC / Cmliu 引擎 Worker 在 Cloudflare 内真实 `connect()` 节点并完成 TLS 握手，拿到 CF 边缘响应才算通过（双接口，32 并发单节点）。**探测点固定在 CF，结论对所有用户一致可复现** —— 外部探针做不到，它的结论只对探测者那个网络成立 |
-| 地区补全 | 无地区码的节点调 [ipinfo.io lite](https://ipinfo.io) 补齐 本地 LRU 缓存 1 万条，重复 IP 不重复查询 |
+| 地区补全 | 无地区码的节点调 [ipinfo.io lite](https://ipinfo.io) 补齐，限流/失败转 [ip-api batch](https://ip-api.com) 批量兜底，本地 LRU 缓存 1 万条，重复 IP 不重复查询 |
 
 判定依据与正反向的定义见 [`代理分类与测试.md`](代理分类与测试.md)。拉取主走 raw 直链（推送即生效），jsDelivr 仅作备用；源配置与格式解析（`SourceParse.py`）、判定与终审全部在 `Start.py`。
 

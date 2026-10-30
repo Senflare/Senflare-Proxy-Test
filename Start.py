@@ -557,8 +557,22 @@ def query_ipinfo(ip):
     return None
 
 
+def query_ipapi_batch(ips):
+    """ip-api batch 批量查地区（ipinfo 限流/失败兜底）→ {ip: 两位国家码}；免费版限 15 批/分钟、单批 100、仅 HTTP"""
+    try:
+        req = urllib.request.Request('http://ip-api.com/batch', data=json.dumps(ips).encode(),
+                                     headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=REGION_TIMEOUT) as r:
+            data = json.loads(r.read().decode('utf-8', 'ignore'))
+        return {ip: str(d.get('countryCode') or '').upper() for ip, d in zip(ips, data)
+                if isinstance(d, dict) and d.get('status') == 'success' and len(str(d.get('countryCode') or '')) == 2}
+    except Exception as e:
+        print(f'\n⚠️  ip-api 批量补全失败，保留空码待下轮：{type(e).__name__}')
+        return {}
+
+
 def ensure_regions(nodes):
-    """地区补全：带地区码的跳过，缺的查缓存 → 接口 补不到的保留（地区留空），限流的保留待下轮"""
+    """地区补全：带地区码的跳过，缺的查缓存 → ipinfo 单查 → ip-api 批量兜底；补不到的保留（地区留空）待下轮"""
     cache = load_region_cache()
     result = list(nodes)
     pending_idx = []
@@ -576,7 +590,8 @@ def ensure_regions(nodes):
         else:
             pending_idx.append(i)
 
-    queried_ok = failed = limited = 0
+    queried_ok = failed = limited = fallback_ok = 0
+    fallback_idx = []
     if pending_idx:
         total = len(pending_idx)
         done = 0
@@ -596,7 +611,8 @@ def ensure_regions(nodes):
                 i, code = fut.result()
                 done += 1
                 if code is RATE_LIMITED:
-                    limited += 1              # 限流：节点原样保留，下轮重试
+                    limited += 1              # 限流：转批量兜底
+                    fallback_idx.append(i)
                 elif code:
                     queried_ok += 1
                     base = result[i].rpartition('#')[0]
@@ -604,17 +620,34 @@ def ensure_regions(nodes):
                     result[i] = f'{base}#{code}'
                     cache[host] = code
                 else:
-                    failed += 1          # 补不到：保留节点，地区留空，下轮再试
-                now = time.time()
+                    failed += 1               # 单查补不到：转批量兜底
+                    fallback_idx.append(i)
                 if done % REGION_WORKERS == 0 or done == total:
                     print(f'\r⏳ 地区查询 进度 {fmt(done)}/{fmt(total)} · 成功 {fmt(queried_ok)}   ',
                           end='', flush=True)
 
+        # ipinfo 限流/失败的节点走 ip-api 批量补全，当场补码，不再等下轮
+        if fallback_idx:
+            print(f'\n🌍 ip-api 批量兜底 {fmt(len(fallback_idx))} 个 · 单批 100 · 批间 4.2s')
+            for k in range(0, len(fallback_idx), 100):
+                batch = fallback_idx[k:k + 100]
+                ips = [result[j].rpartition('#')[0].rpartition(':')[0] for j in batch]
+                codes = query_ipapi_batch(ips)
+                for j in batch:
+                    host = result[j].rpartition('#')[0].rpartition(':')[0]
+                    code = codes.get(host)
+                    if code:
+                        cache[host] = code
+                        result[j] = f"{result[j].rpartition('#')[0]}#{code}"
+                        fallback_ok += 1
+                if k + 100 < len(fallback_idx):
+                    time.sleep(4.2)      # 免费版 15 批/分钟限速
+
     if hits or pending_idx:
         save_region_cache(cache)
     kept = [n for n in result if n]
-    print(f'\n✅ 地区补全完成 · 缓存命中 {fmt(hits)} · 接口成功 {fmt(queried_ok)} · '
-          f'失败保留 {fmt(failed)} · 限流保留 {fmt(limited)} · 缓存存量 {fmt(len(cache))}')
+    print(f'\n✅ 地区补全完成 · 缓存命中 {fmt(hits)} · ipinfo {fmt(queried_ok)} · '
+          f'批量兜底 {fmt(fallback_ok)} · 失败保留 {fmt(failed + limited - fallback_ok)} · 缓存存量 {fmt(len(cache))}')
     return kept
 
 
