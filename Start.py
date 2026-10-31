@@ -740,9 +740,6 @@ def main():
         direct_nodes = direct_nodes[:TEST_LIMIT * len(DIRECT_SOURCES)]
         test_nodes = test_nodes[:TEST_LIMIT * len(TEST_SOURCES)]
 
-    # 历史采集总库:本轮采集到的节点（免测+待测）全部累积
-    all_new, all_total = update_all_file(direct_nodes + test_nodes)
-
     # A×B 四格判定：A = 入口能力（本机网络视角）· B = 出口能力（CF 内，固定视角）
     # 免测组跳过判定直入主产物；待测组只把 B 通过（反向/双向）的节点并入主产物
     # B 探测失败（接口异常/超时）按未判定处理，不新增失败记录
@@ -761,12 +758,22 @@ def main():
     b_verdict = check_exit_all(addrs)
     probed = [(n, a_verdict[node_addr(n)], b_verdict[node_addr(n)][0],
                b_verdict[node_addr(n)][1], b_verdict[node_addr(n)][2]) for n in todo]
+
+    # 地区补全提前：免测 + 待测（含判定失败）全部补码，总库/分类/主产物落盘统一用补全后的行
+    direct_nodes = ensure_regions(direct_nodes)
+    test_nodes = ensure_regions(test_nodes)
+    region_map = {node_addr(n): n for n in test_nodes}
+    probed = [(region_map.get(node_addr(n), n), a_ok, b_ok, lat, rsn)
+              for n, a_ok, b_ok, lat, rsn in probed]
     cnt, dead_total, unknown = write_class_files(probed, dead)
 
     # 主产物 = 免测组 + 待测组 B 通过（反向+双向）；A-only 只进 Forward
     tested = sorted((r[0] for r in probed if r[2] is True),
                     key=lambda n: b_verdict[node_addr(n)][1] or float('inf'))
-    final_nodes = ensure_regions(direct_nodes + tested)
+    final_nodes = direct_nodes + tested
+
+    # 历史采集总库:本轮采集到的节点（免测+待测）全部累积（已带补全码）
+    all_new, all_total = update_all_file(direct_nodes + test_nodes)
     if not final_nodes:
         print('❌ 没有任何可用节点，退出')
         sys.exit(1)
