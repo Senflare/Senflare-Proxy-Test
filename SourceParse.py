@@ -167,7 +167,7 @@ def b64decode_str(text):
 
 
 def extract_region(tag):
-    """从标签提取地区码：emoji 国旗 → 独立字母段（两位验证 / 三位归一）→ 中文国名；提取不到返回 ''"""
+    """从标签提取地区码：emoji 国旗 → 独立字母段（两位验证 / 三位归一）→ 中文国名，提取不到返回 ''"""
     tag = tag.upper()
     m = FLAG_RE.search(tag)
     if m:
@@ -213,7 +213,7 @@ def normalize_line(line):
 
 
 def parse_proxy_link(line):
-    """代理链接（vmess/ss/trojan/vless/hysteria2/tuic）→ ip:port#Region；域名节点与解析失败返回 None"""
+    """代理链接（vmess/ss/trojan/vless/hysteria2/tuic）→ ip:port#Region，域名节点与解析失败返回 None"""
     try:
         scheme, _, rest = line.strip().partition('://')
         scheme = scheme.lower()
@@ -300,7 +300,7 @@ if __name__ == '__main__':
     # 自检：订阅解码（整体 base64 内混合链接与裸 ip:port）
     _sub = base64.b64encode((_vm + '\n' + '1.1.1.1:443#US\n').encode()).decode()
     assert parse_subscription(_sub) == ['1.2.3.4:8443#US', '1.1.1.1:443#US'], '订阅解码错'
-    # 自检：逐行回归（原有格式不受影响；域名与非 IP 形态一律拒绝）
+    # 自检：逐行回归（原有格式不受影响，域名与非 IP 形态一律拒绝）
     assert normalize_line('1.2.3.4:443#US') == '1.2.3.4:443#US', '逐行回归错'
     assert normalize_line('1.2.3.4') == '1.2.3.4:443#', '默认端口错'
     assert normalize_line('example.com:443#US') is None, '域名应拒绝'

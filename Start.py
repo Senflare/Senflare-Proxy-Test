@@ -15,7 +15,6 @@ import socket
 import ssl
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 import urllib.error
@@ -214,7 +213,7 @@ TLS_CTX = ssl.create_default_context()
 TLS_CTX.check_hostname = False
 TLS_CTX.verify_mode = ssl.CERT_NONE
 
-# —— B 出口能力（CF 内真实 connect；接口作者：OTC、Cmliu）——
+# —— B 出口能力（CF 内真实 connect，接口作者：OTC、Cmliu）——
 CHECK_URL = ('https://avotc.zzzzzz.hidns.vip/check?proxyip={addr}'
              '&timeoutMs=10000&readLimit=65536')  # 作者 OTC
 CHECK_PARALLEL = 32    # 并发只调这里，免费接口压太高容易限流
@@ -278,10 +277,15 @@ def fmt(n):
 
 
 def node_addr(line):
-    """任意节点行(可带地区与标签)→ ip:port；无 # 时整行即地址"""
+    """任意节点行(可带地区与标签)→ ip:port，无 # 时整行即地址"""
     base = line.split(' [')[0].strip()
     head, sep, _ = base.rpartition('#')
     return (head if sep else base).strip()
+
+
+def node_host(line):
+    """节点行 → 主机地址（去地区码与端口）"""
+    return line.strip().rpartition('#')[0].rpartition(':')[0]
 
 def fetch_text(url, timeout=FETCH_TIMEOUT, headers=None):
     """拉取数据源文本"""
@@ -292,7 +296,7 @@ def fetch_text(url, timeout=FETCH_TIMEOUT, headers=None):
 
 def subscription_url(url):
     """订阅器源写法规范化 → (请求URL, 是否订阅器)
-    sub:// 前缀或裸域名 → https，丢弃 #标签 后缀，无路径时自动补嗅探参数；完整 http(s) URL 原样"""
+    sub:// 前缀或裸域名 → https，丢弃 #标签 后缀，无路径时自动补嗅探参数，完整 http(s) URL 原样"""
     url = url.split('#', 1)[0].strip()
     if url.startswith(('http://', 'https://')):
         return url, False
@@ -303,7 +307,7 @@ def subscription_url(url):
 
 
 def load_nodes():
-    """拉取两组源 → 去重（待测跳过免测已有）→ (direct, test)；免测组直入主产物"""
+    """拉取两组源 → 去重（待测跳过免测已有）→ (direct, test)，免测组直入主产物"""
     def fetch_group(sources, seen=None):
         seen = seen if seen is not None else set()
         nodes = []
@@ -403,7 +407,7 @@ def probe_entry_all(addrs):
 
 
 def parse_ms(text):
-    """OTC 返回的响应时间（'5ms' / '1.2s'）→ 毫秒；解析不了返回 0"""
+    """OTC 返回的响应时间（'5ms' / '1.2s'）→ 毫秒，解析不了返回 0"""
     try:
         v = str(text).strip()
         if v.endswith('ms'):
@@ -416,8 +420,8 @@ def parse_ms(text):
 
 
 def check_exit_one(addr):
-    """单个节点出口能力 → (True/False/None, 延迟ms, 原因)；None = 探测失败，不据此判无效
-    OTC 与 Cmliu 同时查，任一判有效立即返回；两者都明确无效才判无效"""
+    """单个节点出口能力 → (True/False/None, 延迟ms, 原因)，None = 探测失败，不据此判无效
+    OTC 与 Cmliu 同时查，任一判有效立即返回，两者都明确无效才判无效"""
     futures = {EXIT_POOL.submit(_check_otc, addr): 'otc',
                EXIT_POOL.submit(check_fallback, addr): 'cmliu'}
     results = {}
@@ -425,17 +429,17 @@ def check_exit_one(addr):
         name = futures[fut]
         results[name] = fut.result()
         if results[name][0] is True:      # 有效立即返回，不等另一接口
-            return True, results[name][1] if name == 'otc' else 0.0, ''
+            return True, results[name][1], ''
     otc_res, cmliu_res = results['otc'], results['cmliu']
     if otc_res[0] is False:
         return False, 0.0, otc_res[2]
     if cmliu_res[0] is False:
-        return False, 0.0, cmliu_res[1]
-    return None, 0.0, otc_res[2] or cmliu_res[1] or 'OTC/Cmliu 均无结果'
+        return False, 0.0, cmliu_res[2]
+    return None, 0.0, otc_res[2] or cmliu_res[2] or 'OTC/Cmliu 均无结果'
 
 
 def _check_otc(addr):
-    """OTC 接口单节点 → (True/False/None, 延迟ms, 原因)；接口异常/远端失败返回 None"""
+    """OTC 接口单节点 → (True/False/None, 延迟ms, 原因)，接口异常/远端失败返回 None"""
     reason = 'OTC 接口无有效返回'
     for attempt in range(1, EXIT_RETRIES + 1):
         try:
@@ -479,8 +483,9 @@ def check_exit_all(addrs):
 
 
 def check_fallback(addr):
-    """Cmliu 接口备用检测 → (True/False/None, 原因)；None = 接口不可用，不判无效"""
+    """Cmliu 接口备用检测 → (True/False/None, 延迟ms, 原因)，None = 接口不可用，不判无效"""
     reason = 'Cmliu 接口无有效返回'
+    lat = 0.0
     for attempt in range(1, EXIT_RETRIES + 1):
         try:
             qs = urlencode({'proxyip': addr})
@@ -489,21 +494,22 @@ def check_fallback(addr):
             with urllib.request.urlopen(req, timeout=FALLBACK_TIMEOUT) as r:
                 data = json.loads(r.read().decode('utf-8', 'ignore'))
             if isinstance(data, dict) and isinstance(data.get('success'), bool):
+                lat = float(data.get('responseTime') or 0)
                 reason = ''
                 if not data['success']:
                     probes = data.get('probe_results') or {}
                     probe = probes.get('ipv4') or probes.get('ipv6') or {}
                     reason = str(probe.get('error', '') or 'Cmliu 接口未通过').strip()
-                return data['success'], reason
+                return data['success'], lat, reason
         except urllib.error.HTTPError as e:
             reason = f'Cmliu 接口 HTTP {e.code}'
             if 400 <= e.code < 500:      # 4xx 重试无意义（403 是服务端配置问题）
-                return None, reason
+                return None, lat, reason
         except Exception as e:
             reason = f'Cmliu 接口异常:{type(e).__name__}'
         if attempt < EXIT_RETRIES:
             time.sleep(EXIT_RETRY_DELAY)
-    return None, reason
+    return None, lat, reason
 
 
 # ============================================================================
@@ -558,7 +564,7 @@ def query_ipinfo(ip):
 
 
 def query_ipapi_batch(ips):
-    """ip-api batch 批量查地区（ipinfo 限流/失败兜底）→ {ip: 两位国家码}；免费版限 15 批/分钟、单批 100、仅 HTTP"""
+    """ip-api batch 批量查地区 → {ip: 两位国家码}，免费版限 15 批/分钟、单批 100、仅 HTTP"""
     try:
         req = urllib.request.Request('http://ip-api.com/batch', data=json.dumps(ips).encode(),
                                      headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'})
@@ -571,8 +577,27 @@ def query_ipapi_batch(ips):
         return {}
 
 
+def backfill_codes(lines, idx, cache):
+    """对空码行（行尾 #）批量查归属并回填行与缓存 → 成功数"""
+    ips = sorted({node_host(lines[i]) for i in idx})
+    codes = {}
+    for k in range(0, len(ips), 100):
+        codes.update(query_ipapi_batch(ips[k:k + 100]))
+        if k + 100 < len(ips):
+            time.sleep(4.2)      # 免费版 15 批/分钟限速
+    fixed = 0
+    for i in idx:
+        ip = node_host(lines[i])
+        if codes.get(ip):
+            lines[i] = lines[i].strip() + codes[ip]
+            cache[ip] = codes[ip]
+            fixed += 1
+    print(f'🌍 ip-api 批量补码 {fmt(len(ips))} 个 IP · 成功 {fmt(fixed)}')
+    return fixed
+
+
 def ensure_regions(nodes):
-    """地区补全：带地区码的跳过，缺的查缓存 → ipinfo 单查 → ip-api 批量兜底；补不到的保留（地区留空）待下轮"""
+    """地区补全：带地区码的跳过，缺的查缓存 → ipinfo 单查 → ip-api 批量兜底，补不到的保留（地区留空）待下轮"""
     cache = load_region_cache()
     result = list(nodes)
     pending_idx = []
@@ -599,9 +624,8 @@ def ensure_regions(nodes):
               f'ipinfo lite · 并发 {REGION_WORKERS}')
 
         def work(i):
-            host = result[i].rpartition('#')[0].rpartition(':')[0]
             try:
-                return i, query_ipinfo(host)
+                return i, query_ipinfo(node_host(result[i]))
             except RegionRateLimited:
                 return i, RATE_LIMITED
 
@@ -628,20 +652,7 @@ def ensure_regions(nodes):
 
         # ipinfo 限流/失败的节点走 ip-api 批量补全，当场补码，不再等下轮
         if fallback_idx:
-            print(f'\n🌍 ip-api 批量兜底 {fmt(len(fallback_idx))} 个 · 单批 100 · 批间 4.2s')
-            for k in range(0, len(fallback_idx), 100):
-                batch = fallback_idx[k:k + 100]
-                ips = [result[j].rpartition('#')[0].rpartition(':')[0] for j in batch]
-                codes = query_ipapi_batch(ips)
-                for j in batch:
-                    host = result[j].rpartition('#')[0].rpartition(':')[0]
-                    code = codes.get(host)
-                    if code:
-                        cache[host] = code
-                        result[j] = f"{result[j].rpartition('#')[0]}#{code}"
-                        fallback_ok += 1
-                if k + 100 < len(fallback_idx):
-                    time.sleep(4.2)      # 免费版 15 批/分钟限速
+            fallback_ok = backfill_codes(result, fallback_idx, cache)
 
     if hits or pending_idx:
         save_region_cache(cache)
@@ -667,7 +678,7 @@ def load_dead_list(lines=None):
 
 
 def classify(a_ok, b_ok):
-    """A×B 四格分类；B 未判定返回 None（不写四格、不新增失败记录）"""
+    """A×B 四格分类，B 未判定返回 None（不写四格、不新增失败记录）"""
     if b_ok is None:
         return None
     return ('Bidirectional' if a_ok and b_ok else 'Forward' if a_ok
@@ -675,7 +686,7 @@ def classify(a_ok, b_ok):
 
 
 def write_class_files(probed, dead):
-    """A×B 四格落盘；B 未判定不进四格、不新增失败记录
+    """A×B 四格落盘，B 未判定不进四格、不新增失败记录
     Invalid = 旧总表 ∪ 本轮明确失败 − 本轮复活（已判定非无效）"""
     groups = {t: [] for t in ('Bidirectional', 'Forward', 'Reverse', 'Invalid')}
     cnt = Counter()
@@ -685,7 +696,7 @@ def write_class_files(probed, dead):
         tag = classify(a_ok, b_ok)
         if tag is None:
             unknown += 1
-            if a_ok:                  # A 已通，至少不是无效；B 未判定暂不进四格
+            if a_ok:                  # A 已通，至少不是无效，B 未判定暂不进四格
                 resolved.add(node_addr(node))
             continue
         cnt[tag] += 1
@@ -722,6 +733,7 @@ def update_all_file(nodes):
 
 def backfill_blank_codes():
     """历史库残留空码回补：All/Invalid 里补全阶段仍拿不到码的行，每轮用 ip-api 批量重试，逐轮清零"""
+    cache = load_region_cache()
     for fname in (ALL_FILE, INVALID_FILE):
         if not os.path.exists(fname):
             continue
@@ -729,23 +741,12 @@ def backfill_blank_codes():
         idx = [i for i, l in enumerate(lines) if l.strip().endswith('#')]
         if not idx:
             continue
-        ips = sorted({lines[i].strip().rpartition('#')[0].rpartition(':')[0] for i in idx})
-        codes = {}
-        for k in range(0, len(ips), 100):
-            codes.update(query_ipapi_batch(ips[k:k + 100]))
-            if k + 100 < len(ips):
-                time.sleep(4.2)      # 免费版 15 批/分钟限速
-        fixed = 0
-        for i in idx:
-            line = lines[i].strip()
-            ip = line.rpartition('#')[0].rpartition(':')[0]
-            if codes.get(ip):
-                lines[i] = line + codes[ip]
-                fixed += 1
-        with open(fname, 'w', encoding='utf-8', newline='\n') as f:
-            f.write('\n'.join(lines) + '\n')
+        fixed = backfill_codes(lines, idx, cache)
         if fixed:
+            with open(fname, 'w', encoding='utf-8', newline='\n') as f:
+                f.write('\n'.join(lines) + '\n')
             print(f'🔁 {os.path.basename(fname)} 回补历史空码 {fmt(fixed)} 个')
+    save_region_cache(cache)
 
 
 def main():
@@ -759,8 +760,8 @@ def main():
 
     # 剔除 Cloudflare 官方网段（判定前清掉，省判定算力）
     before = len(direct_nodes) + len(test_nodes)
-    direct_nodes = [n for n in direct_nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
-    test_nodes = [n for n in test_nodes if not is_cf_ip(n.rpartition('#')[0].rpartition(':')[0])]
+    direct_nodes = [n for n in direct_nodes if not is_cf_ip(node_host(n))]
+    test_nodes = [n for n in test_nodes if not is_cf_ip(node_host(n))]
     if before - len(direct_nodes) - len(test_nodes):
         print(f'🧹 Cloudflare 官方网段剔除 {fmt(before - len(direct_nodes) - len(test_nodes))} 个节点')
 
@@ -769,7 +770,7 @@ def main():
         test_nodes = test_nodes[:TEST_LIMIT * len(TEST_SOURCES)]
 
     # A×B 四格判定：A = 入口能力（本机网络视角）· B = 出口能力（CF 内，固定视角）
-    # 免测组跳过判定直入主产物；待测组只把 B 通过（反向/双向）的节点并入主产物
+    # 免测组直入主产物，待测组仅 B 通过（反向/双向）的并入
     # B 探测失败（接口异常/超时）按未判定处理，不新增失败记录
     # 失败总表全部跳过，但每轮随机抽 RESCUE_SAMPLE 个复测（通过即复活）
     dead = load_dead_list()
@@ -782,20 +783,26 @@ def main():
     if skipped:
         print(f'⏭️ 死单跳过 {fmt(skipped)} 个（本轮未抽中，下轮再抽）')
     addrs = [node_addr(n) for n in todo]
-    a_verdict = probe_entry_all(addrs)
-    b_verdict = check_exit_all(addrs)
+    # A 入口与 B 出口并行探测，内部并发不变，OTC/Cmliu 互备不变
+    with ThreadPoolExecutor(2) as ab_pool:
+        fa = ab_pool.submit(probe_entry_all, addrs)
+        fb = ab_pool.submit(check_exit_all, addrs)
+        a_verdict = fa.result()
+        b_verdict = fb.result()
     probed = [(n, a_verdict[node_addr(n)], b_verdict[node_addr(n)][0],
                b_verdict[node_addr(n)][1], b_verdict[node_addr(n)][2]) for n in todo]
 
-    # 地区补全提前：免测 + 待测（含判定失败）全部补码，总库/分类/主产物落盘统一用补全后的行
+    # 地区补全提前：全部节点先补码，总库/分类/主产物统一用补全后的行
     direct_nodes = ensure_regions(direct_nodes)
-    test_nodes = ensure_regions(test_nodes)
+    seen_test = {node_addr(n) for n in test_nodes}
+    rescue_only = [n for n in rescue_lines.values() if node_addr(n) not in seen_test]
+    test_nodes = ensure_regions(test_nodes + rescue_only)
     region_map = {node_addr(n): n for n in test_nodes}
     probed = [(region_map.get(node_addr(n), n), a_ok, b_ok, lat, rsn)
               for n, a_ok, b_ok, lat, rsn in probed]
     cnt, dead_total, unknown = write_class_files(probed, dead)
 
-    # 主产物 = 免测组 + 待测组 B 通过（反向+双向）；A-only 只进 Forward
+    # 主产物 = 免测组 + 待测组 B 通过（反向+双向），A-only 只进 Forward
     tested = sorted((r[0] for r in probed if r[2] is True),
                     key=lambda n: b_verdict[node_addr(n)][1] or float('inf'))
     final_nodes = direct_nodes + tested
@@ -832,7 +839,7 @@ if __name__ == '__main__':
         {'1.1.1.1:443': '1.1.1.1:443#US', '2.2.2.2:443': '2.2.2.2:443#US'}, '总表去重错'
     # 自检：响应时间解析
     assert (parse_ms('5ms'), parse_ms('1.2s'), parse_ms('x')) == (5.0, 1200.0, 0.0)
-    # 自检：A×B 四格映射（正向=只能当入口，反向=只能当出口）；B 未判定不进四格
+    # 自检：A×B 四格映射（正向=只当入口，反向=只当出口），B 未判定不进四格
     cases = [('a:1#US', True, True), ('b:1#US', True, False),
              ('c:1#US', False, True), ('d:1#US', False, False)]
     tags = [classify(a, b) for _, a, b in cases]
