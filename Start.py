@@ -720,6 +720,34 @@ def update_all_file(nodes):
     return len(nodes), len(merged)
 
 
+def backfill_blank_codes():
+    """历史库残留空码回补：All/Invalid 里补全阶段仍拿不到码的行，每轮用 ip-api 批量重试，逐轮清零"""
+    for fname in (ALL_FILE, INVALID_FILE):
+        if not os.path.exists(fname):
+            continue
+        lines = [l.rstrip('\n') for l in open(fname, encoding='utf-8')]
+        idx = [i for i, l in enumerate(lines) if l.strip().endswith('#')]
+        if not idx:
+            continue
+        ips = sorted({lines[i].strip().rpartition('#')[0].rpartition(':')[0] for i in idx})
+        codes = {}
+        for k in range(0, len(ips), 100):
+            codes.update(query_ipapi_batch(ips[k:k + 100]))
+            if k + 100 < len(ips):
+                time.sleep(4.2)      # 免费版 15 批/分钟限速
+        fixed = 0
+        for i in idx:
+            line = lines[i].strip()
+            ip = line.rpartition('#')[0].rpartition(':')[0]
+            if codes.get(ip):
+                lines[i] = line + codes[ip]
+                fixed += 1
+        with open(fname, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('\n'.join(lines) + '\n')
+        if fixed:
+            print(f'🔁 {os.path.basename(fname)} 回补历史空码 {fmt(fixed)} 个')
+
+
 def main():
     started = time.time()
     print('🚀 Senflare Proxy Test 启动')
@@ -774,6 +802,7 @@ def main():
 
     # 历史采集总库:本轮采集到的节点（免测+待测）全部累积（已带补全码）
     all_new, all_total = update_all_file(direct_nodes + test_nodes)
+    backfill_blank_codes()
     if not final_nodes:
         print('❌ 没有任何可用节点，退出')
         sys.exit(1)
